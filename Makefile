@@ -1,13 +1,16 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g -Iinclude  # Добавляем include для заголовочных файлов
 
 # Target executable
 TARGET = shell
 
-# Source files
-SRCS = shell.c
-OBJS = $(SRCS:.c=.o)
+# Source and object files
+SRCDIR = src
+INCDIR = include
+BUILDDIR = build
+SRCS = $(wildcard $(SRCDIR)/*.c)  # Автоматически находим все .c файлы в src/
+OBJS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))  # Преобразуем .c файлы в .o и сохраняем в build/
 
 # Default target: Build the program
 all: $(TARGET)
@@ -17,11 +20,12 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
 
 # Rule to compile source files into object files
-%.o: %.c
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Clean up build artifacts
-clean: rm -f $(OBJS) $(TARGET)
+clean:
+	rm -f $(BUILDDIR)/*.o $(TARGET)
 
 # Run the program with arguments
 run: $(TARGET)

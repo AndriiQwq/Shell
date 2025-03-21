@@ -2,15 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <sys/un.h>
 #include <dirent.h>
 
 #include "shell.h"
+
 
 void run_server(int port) {
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -63,7 +62,7 @@ void run_server(int port) {
             break;
         }
 
-        char *result = shell_process_command(buffer, client_sock);
+        char *result = shell_process_input(buffer);
         
         char combined[1024];
         snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
@@ -81,12 +80,6 @@ void run_server(int port) {
             close(client_sock);
             close(server_sock);
             exit(0);
-        } else if (strcmp(buffer, "help") == 0) {
-            write(client_sock, "Available commands: help, quit, halt", 36);
-        } else if (strncmp(buffer, "receivefile ", 12) == 0) {
-            const char *output_file = buffer + 12;
-            receive_file(client_sock, output_file);
-            continue;
         }
     }
 
@@ -145,7 +138,7 @@ void run_unix_server(const char *socket_path) {
             break;
         }
 
-        char *result = shell_process_command(buffer, client_sock);
+        char *result = shell_process_input(buffer);
         
         char combined[1024];
         snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
