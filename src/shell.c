@@ -5,9 +5,16 @@
 #include <time.h>
 #include <pwd.h>
 #include <dirent.h>
+#include <ctype.h>
 
+#include <fcntl.h>
+#include <sys/wait.h> // waitpid
+// #include <asm-generic/fcntl.h>
+
+// include functions 
 #include "shell.h"
-#include <asm-generic/fcntl.h>
+#include "utils.h"
+
 
 char isServer = 0;
 char isClient = 0;
@@ -16,38 +23,28 @@ char *socketName = NULL;
 char *ip = "127.0.0.1";
 
 char *get_prompt() {
-    static char prompt[512];
+    static char prompt[256];
 
-    uid_t uid = getuid();
-    struct passwd *pw = getpwuid(uid);
-    if (!pw) {
-        perror("getpwuid");
-        return NULL;
-    }
-
-    char hostname[256];
-    if (gethostname(hostname, sizeof(hostname)) != 0) {
-        perror("gethostname");
-        return NULL;
-    }
-
+    // https://stackoverflow.com/questions/5141960/get-the-current-time-in-c
     time_t current_time = time(NULL);
     struct tm *local_time = localtime(&current_time);
-    if (!local_time) {
-        perror("localtime");
-        return NULL;
-    }
+    if (!local_time) perror("localtime");
 
     char time_string[6];
     if (strftime(time_string, sizeof(time_string), "%H:%M", local_time) == 0) {
         fprintf(stderr, "strftime failed\n");
-        return NULL;
+        strncpy(time_string, "00:00", sizeof(time_string) - 1);
+        time_string[sizeof(time_string) - 1] = '\0';
     }
 
-    if (snprintf(prompt, sizeof(prompt), "%s %s@%s$", time_string, pw->pw_name, hostname) >= (int)sizeof(prompt)) {
-        fprintf(stderr, "Prompt string was truncated\n");
-        return NULL;
-    }
+    uid_t uid = getuid();
+    struct passwd *pw = getpwuid(uid);
+    if (!pw) perror("getpwuid");
+
+    char hostname[32];
+    if (gethostname(hostname, sizeof(hostname)) != 0)  perror("gethostname");
+
+    snprintf(prompt, sizeof(prompt), "%s %s@%s$", time_string, pw->pw_name, hostname);
 
     return prompt;
 }
@@ -82,12 +79,10 @@ char *shell_process_command(const char *command) {
     } else if (strncmp(command, "cat ", 4) == 0) {
         const char *file_path = command + 4;
         return cmd_cat(file_path);
-    }
-    // else if (strncmp(command, "send ", 5) == 0) {
-    //     const char *file_path = command + 5;
-    //     return cmd_send(NULL, file_path);
-    // } 
-    else {
+    } else if (strncmp(command, "echo ", 5) == 0) {
+        const char *message = command + 5;
+        return strdup(message); // Duplicate S, returning an identical malloc'd string.
+    } else {
         return "";
     }
 }
@@ -103,7 +98,10 @@ char *cmd_help() {
            "pwd - display the current directory\n"
            "cd <path> - change the current directory\n"
            "ls - list files in the current directory\n"
-           "send <file_path> - send a file to the client\n";
+           "cat <file_path> - display the contents of a file\n"
+           "echo <message> - display a message\n"
+           "Note: commands are case-sensitive"
+           "ls > file.txt - save the output of ls to a file\n";
 }
 
 char *cmd_quit() {
@@ -117,34 +115,25 @@ char *cmd_halt() {
 char *cmd_whoami() {
     uid_t uid = getuid();
     struct passwd *pw = getpwuid(uid);
-    if (pw)
-        return pw->pw_name;
-    else
-        return "Error to get username";
+    if (pw) return pw->pw_name;
+    else return "Error to get username";
 }
 
 char *cmd_hostname() {
     static char hostname[256];
-    if (gethostname(hostname, sizeof(hostname)) == 0)
-        return hostname;
-    else
-        return "Error to get hostname";
+    if (gethostname(hostname, sizeof(hostname)) == 0)  return hostname;
+    else return "Error to get hostname";
 }
 
 char *cmd_pwd() {
     static char cwd[512];
-    if (getcwd(cwd, sizeof(cwd)) != NULL)
-        return cwd;
-    else
-        return "Error to get current directory";
+    if (getcwd(cwd, sizeof(cwd)) != NULL) return cwd;
+    else return "Error to get current directory";
 }
 
 char *cmd_cd(const char *path) {
-    if (chdir(path) == 0) {
-        return "Current directory changed";
-    } else {
-        return "Failed to change directory";
-    }
+    if (chdir(path) == 0) return cmd_pwd();
+    else return "Failed to change directory";
 }
 
 char *cmd_ls() {
@@ -171,15 +160,17 @@ char *cmd_cat(const char *file_path) {
     memset(cat_buffer, 0, sizeof(cat_buffer));
 
     FILE *file = fopen(file_path, "r");
-    if (file == NULL) {
-        return "Failed to open file";
-    }
+    if (file == NULL) return "Failed to open file";
 
+    char *current_pos = cat_buffer;
+    size_t rem_size = sizeof(cat_buffer) - 1;
     size_t n;
-    while ((n = fread(cat_buffer + strlen(cat_buffer), 1, sizeof(cat_buffer) - strlen(cat_buffer) - 1, file)) > 0) {
-        if (strlen(cat_buffer) >= sizeof(cat_buffer) - 1) {
-            break;
-        }
+
+    while ((n = fread(current_pos, 1, rem_size, file)) > 0) {
+        current_pos += n;
+        rem_size -= n;
+
+        if (rem_size == 0) break;
     }
 
     fclose(file);
@@ -213,98 +204,66 @@ char *cmd_cat(const char *file_path) {
 // }
 
 
-// Функция для удаления ведущих и завершающих пробелов
-char *trim_whitespace(char *str) {
-    char *end;
+// char *shell_process_input(const char *command) {
+//     char *final_result = NULL;
+//     char *command_copy = strdup(command);
 
-    // Удаление ведущих пробелов
-    while (isspace((unsigned char)*str)) str++;
+//     // Comment handling
+//     char *comment_position = strchr(command_copy, '#');
+//     if (comment_position) *comment_position = '\0';
 
-    if (*str == 0)  // Все пробелы
-        return str;
+//     // Some commands handling
+//     char *commands = strtok(command_copy, ";");
+//     while (commands != NULL) {
+//         char *trimmed_command = trim(commands);
 
-    // Удаление завершающих пробелов
-    end = str + strlen(str) - 1;
-    while (end > str && isspace((unsigned char)*end)) end--;
+//         if (strchr(trimmed_command, '|')) {
+//             execute_pipeline(trimmed_command);
+//         } else {
+//             char *input_file = NULL;
+//             char *output_file = NULL;
+//             char *base_command = strdup(trimmed_command);
+//             if (!base_command) {
+//                 perror("strdup");
+//                 free(command_copy);
+//                 return "Memory allocation error";
+//             }
 
-    // Позиционирование завершающего нуля
-    end[1] = '\0';
+//             parse_redirections(base_command, &input_file, &output_file);
 
-    return str;
-}
+//             char *args[64];
+//             int i = 0;
+//             char *arg = strtok(base_command, " ");
+//             while (arg != NULL) {
+//                 args[i++] = arg;
+//                 arg = strtok(NULL, " ");
+//             }
+//             args[i] = NULL;
 
-// Функция для обработки специальных символов
-char *shell_process_input(const char *command) {
-    char *result = NULL;
-    char *temp_command = strdup(command);
-    char *token;
+//             execute_command(args, input_file, output_file, -1, -1);
 
-    // Обработка комментариев (#)
-    if ((token = strchr(temp_command, '#')) != NULL) {
-        *token = '\0';
+//             free(base_command);
+//         }
+
+//         commands = strtok(NULL, ";");
+//     }
+
+//     free(command_copy);
+//     return final_result ? final_result : strdup("");
+// }
+
+
+char *execute_command(char **args, char *input_file, char *output_file) {
+    int pipe_fd[2];
+    if (pipe(pipe_fd) == -1) {
+        perror("pipe");
+        return "Pipe error";
     }
 
-    // Обработка нескольких команд (;)
-    char *commands = strtok(temp_command, ";");
-    while (commands != NULL) {
-        // Удаление ведущих и завершающих пробелов из команды
-        char *trimmed_command = trim_whitespace(commands);
-
-        char *sub_result = shell_process_command(trimmed_command);
-        if (result == NULL) {
-            result = strdup(sub_result);
-        } else {
-            result = realloc(result, strlen(result) + strlen(sub_result) + 2);
-            strcat(result, "\n");
-            strcat(result, sub_result);
-        }
-        commands = strtok(NULL, ";");
-    }
-
-    // Обработка перенаправления ввода/вывода (<, >)
-    if (strchr(temp_command, '<') || strchr(temp_command, '>')) {
-        // Пример: ls > output.txt
-        // Пример: cat < input.txt
-        char *input_file = NULL;
-        char *output_file = NULL;
-        char *base_command = strdup(temp_command);
-        char *redir_token;
-
-        // Поиск перенаправления ввода (<)
-        if ((redir_token = strchr(base_command, '<')) != NULL) {
-            *redir_token = '\0';
-            input_file = strtok(redir_token + 1, " ");
-        }
-
-        // Поиск перенаправления вывода (>)
-        if ((redir_token = strchr(base_command, '>')) != NULL) {
-            *redir_token = '\0';
-            output_file = strtok(redir_token + 1, " ");
-        }
-
-        // Выполнение команды с перенаправлением ввода/вывода
-        char *args[64];
-        int i = 0;
-        char *arg = strtok(base_command, " ");
-        while (arg != NULL) {
-            args[i++] = arg;
-            arg = strtok(NULL, " ");
-        }
-        args[i] = NULL;
-
-        execute_command(args, input_file, output_file);
-    }
-
-    // Обработка пайпов (|) и других специальных символов может быть добавлена по аналогии
-
-    free(temp_command);
-    return result;
-}
-
-void execute_command(char **args, char *input_file, char *output_file) {
     pid_t pid = fork();
     if (pid == 0) {
-        // Дочерний процесс
+        close(pipe_fd[0]);
+
         if (input_file) {
             int fd = open(input_file, O_RDONLY);
             if (fd < 0) {
@@ -323,18 +282,111 @@ void execute_command(char **args, char *input_file, char *output_file) {
             }
             dup2(fd, STDOUT_FILENO);
             close(fd);
+        } else {
+            dup2(pipe_fd[1], STDOUT_FILENO);
         }
+
+        close(pipe_fd[1]);
 
         if (execvp(args[0], args) == -1) {
             perror("execvp");
             exit(EXIT_FAILURE);
         }
     } else if (pid < 0) {
-        // Ошибка при fork
         perror("fork");
+        return "Fork error";
     } else {
-        // Родительский процесс
+        close(pipe_fd[1]);
+
         int status;
         waitpid(pid, &status, 0);
+
+        char buffer[4096];
+        ssize_t count = read(pipe_fd[0], buffer, sizeof(buffer) - 1);
+        if (count < 0) {
+            perror("read");
+            close(pipe_fd[0]);
+            return "Read error";
+        }
+        buffer[count] = '\0';
+
+        close(pipe_fd[0]);
+        return strdup(buffer);
     }
+
+    return NULL;
+}
+
+void parse_redirections(char *command, char **input_file, char **output_file) {
+    char *redir_token;
+
+    if ((redir_token = strchr(command, '<')) != NULL) {
+        *redir_token = '\0';
+        *input_file = strtok(redir_token + 1, " ");
+        *input_file = trim(*input_file);
+    }
+
+    if ((redir_token = strchr(command, '>')) != NULL) {
+        *redir_token = '\0';
+        *output_file = strtok(redir_token + 1, " ");
+        *output_file = trim(*output_file);
+    }
+}
+
+char *shell_process_input(char *command) {
+    char *output = NULL;
+
+    char *comment_position = strchr(command, '#');
+    if (comment_position) *comment_position = '\0';
+
+    if (strchr(command, ';') == NULL) {
+        char *trimmed_command = trim(command);
+        char *input_file = NULL;
+        char *output_file = NULL;
+
+        parse_redirections(trimmed_command, &input_file, &output_file);
+
+        char *args[64];
+        int i = 0;
+        char *arg = strtok(trimmed_command, " ");
+        while (arg != NULL) {
+            args[i++] = arg;
+            arg = strtok(NULL, " ");
+        }
+        args[i] = NULL;
+
+        output = execute_command(args, input_file, output_file);
+    } else {
+        char *commands = strtok(command, ";");
+        while (commands != NULL) {
+            char *trimmed_command = trim(commands);
+
+            char *input_file = NULL;
+            char *output_file = NULL;
+
+            parse_redirections(trimmed_command, &input_file, &output_file);
+
+            char *args[64];
+            int i = 0;
+            char *arg = strtok(trimmed_command, " ");
+            while (arg != NULL) {
+                args[i++] = arg;
+                arg = strtok(NULL, " ");
+            }
+            args[i] = NULL;
+
+            char *sub_output = execute_command(args, input_file, output_file);
+            if (output == NULL) {
+                output = strdup(sub_output);
+            } else {
+                output = realloc(output, strlen(output) + strlen(sub_output) + 2);
+                strcat(output, "\n");
+                strcat(output, sub_output);
+            }
+
+            commands = strtok(NULL, ";");
+        }
+    }
+
+    return output ? output : strdup("");
 }

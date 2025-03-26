@@ -9,7 +9,14 @@
 #include <dirent.h>
 
 #include "shell.h"
+#include "utils.h" // trim 
+#include "script_reader.h" // process_script
 
+void log_command_execution(const char *command, const char *result, const char *prompt) {
+    printf("%s\n", command);
+    printf("%s\n", result);
+    printf("%s", prompt);
+}
 
 void run_server(int port) {
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -62,15 +69,24 @@ void run_server(int port) {
             break;
         }
 
-        char *result = shell_process_input(buffer);
-        
-        char combined[1024];
-        snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
-        write(client_sock, combined, strlen(combined));
+        trim(buffer); // Trim input command
 
-        printf("%s\n", buffer);
-        printf("%s\n", result);
-        printf("%s", get_prompt());
+        if(strncmp(buffer, "run ", 4) == 0) {
+            char *script_path = buffer + 4;
+            char *script_output = process_script(script_path);
+            write(client_sock, script_output, strlen(script_output));
+
+            log_command_execution(buffer, script_output, get_prompt());
+            free(script_output);
+        } else {
+            char *result = shell_process_input(buffer);
+            char combined[1024];
+            snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
+            write(client_sock, combined, strlen(combined));
+
+            log_command_execution(buffer, result, get_prompt());
+            free(result);
+        }
 
         if (strcmp(buffer, "quit") == 0) {
             printf("Client requested to quit\n");
@@ -138,15 +154,25 @@ void run_unix_server(const char *socket_path) {
             break;
         }
 
-        char *result = shell_process_input(buffer);
-        
-        char combined[1024];
-        snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
-        write(client_sock, combined, strlen(combined));
+        trim(buffer); // Trim input command
 
-        printf("%s\n", buffer);
-        printf("%s\n", result);
-        printf("%s", get_prompt());
+        if(strncmp(buffer, "run ", 4) == 0) {
+            char *script_path = buffer + 4;
+            char *script_output = process_script(script_path);
+            write(client_sock, script_output, strlen(script_output));
+
+            log_command_execution(buffer, script_output, get_prompt());
+            free(script_output);
+        } else {
+            char *result = shell_process_input(buffer);
+            char combined[1024];
+            snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
+            write(client_sock, combined, strlen(combined));
+
+            log_command_execution(buffer, result, get_prompt());
+            free(result);
+        }
+
 
         if (strcmp(buffer, "quit") == 0) {
             printf("Client requested to quit\n");
