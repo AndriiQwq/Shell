@@ -1,8 +1,0 @@
-pwd
-ls
-echo Hello, World!
-cat file.txt
-whoami
-hostname
-help 
-quit

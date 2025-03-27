@@ -21,28 +21,23 @@
 #include "shell.h"
 #include "keepalive.h"
 
+#include "logger.h"
+
 // void run_keep_alive_daemon(int sock, KeepAlive *keep_alive) {}
-// #define check(expr) if (!(expr)) { perror(#expr); exit(EXIT_FAILURE); }
 
 #define BUFFER_SIZE 1024
 
 void process_user_input(int sock, char *buffer) {
     fgets(buffer, BUFFER_SIZE, stdin);
-    
-    if (strncmp(buffer, "disconect ", 10) == 0) {
-        write(sock, buffer, strlen(buffer));
-        exit(0);
-    }
 
     if (strlen(buffer) == 1 && buffer[0] == '\n') {
         write(sock, buffer, strlen(buffer));
         memset(buffer, 0, BUFFER_SIZE);
-        read(sock, buffer, BUFFER_SIZE);
-        printf("%s", buffer);
         return;
     }
 
     buffer[strcspn(buffer, "\n")] = 0;
+    write_log("CLIENT", buffer); // Client can see only his log
 
     if (strcmp(buffer, "quit") == 0) { // Stop the client
         write(sock, buffer, strlen(buffer));

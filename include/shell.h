@@ -13,10 +13,6 @@ extern char *ip;
 char *get_prompt();
 char *shell_process_command(const char *command);
 char *shell_process_input(char *command);
-// void execute_command(char **args, char *input_file, char *output_file);
-// void parse_redirections(char *command, char **input_file, char **output_file);
-char *execute_command(char **args, char *input_file, char *output_file);
-void parse_redirections(char *command, char **input_file, char **output_file);
 // char *execute_pipeline(char *command);
 
 void run_server(int port);
@@ -34,5 +30,8 @@ char *cmd_cd(const char *path);
 char *cmd_ls();
 char *cmd_cat(const char *file_path);
 // char *cmd_send(int client_sock, const char *file_path);
+
+void  write_file(const char* filename, const char* content);
+char * read_file(const char* filename);
 
 #endif // SHELL_H

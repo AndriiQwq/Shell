@@ -26,16 +26,7 @@ char *get_prompt() {
     static char prompt[256];
 
     // https://stackoverflow.com/questions/5141960/get-the-current-time-in-c
-    time_t current_time = time(NULL);
-    struct tm *local_time = localtime(&current_time);
-    if (!local_time) perror("localtime");
-
-    char time_string[6];
-    if (strftime(time_string, sizeof(time_string), "%H:%M", local_time) == 0) {
-        fprintf(stderr, "strftime failed\n");
-        strncpy(time_string, "00:00", sizeof(time_string) - 1);
-        time_string[sizeof(time_string) - 1] = '\0';
-    }
+    char *current_time = get_current_time();
 
     uid_t uid = getuid();
     struct passwd *pw = getpwuid(uid);
@@ -44,8 +35,9 @@ char *get_prompt() {
     char hostname[32];
     if (gethostname(hostname, sizeof(hostname)) != 0)  perror("gethostname");
 
-    snprintf(prompt, sizeof(prompt), "%s %s@%s$", time_string, pw->pw_name, hostname);
+    snprintf(prompt, sizeof(prompt), "%s %s@%s$", current_time, pw->pw_name, hostname);
 
+    free(current_time);
     return prompt;
 }
 
@@ -78,7 +70,7 @@ char *shell_process_command(const char *command) {
         return cmd_ls();
     } else if (strncmp(command, "cat ", 4) == 0) {
         const char *file_path = command + 4;
-        return cmd_cat(file_path);
+        return strdup(cmd_cat(file_path));
     } else if (strncmp(command, "echo ", 5) == 0) {
         const char *message = command + 5;
         return strdup(message); // Duplicate S, returning an identical malloc'd string.
@@ -89,8 +81,22 @@ char *shell_process_command(const char *command) {
 
 
 char *cmd_help() {
-    return "Available commands:\n"
-           "help - display this help message\n"
+    return (
+        "Shell\n"
+        "Author: Andrii Dokaniev\n"
+        "Purpose: Simple and speed client/server shell, optimized for concrete tasks\n"
+        "Usage: shell [-s | -c] [-p port] [-u socket]\n"
+        "Options:\n"
+        "  -s          Run as server\n"
+        "  -c          Run as client\n"
+        "  -p port     Specify port number\n"
+        "  -u socket   Specify socket name\n"
+        "  -i ip       Specify IP address\n"
+        "  -h          Show help message\n"
+        "  -t timeout  Set inactivity timeout\n"
+        "\n"
+        "Available commands:\n"
+           "help - display the help message\n"
            "quit - close the connection\n"
            "halt - stop the server\n"
            "whoami - display the current username\n"
@@ -101,7 +107,8 @@ char *cmd_help() {
            "cat <file_path> - display the contents of a file\n"
            "echo <message> - display a message\n"
            "Note: commands are case-sensitive"
-           "ls > file.txt - save the output of ls to a file\n";
+           "ls > file.txt - save the output of ls to a file\n"
+    );
 }
 
 char *cmd_quit() {
@@ -126,7 +133,7 @@ char *cmd_hostname() {
 }
 
 char *cmd_pwd() {
-    static char cwd[512];
+    static char cwd[256];
     if (getcwd(cwd, sizeof(cwd)) != NULL) return cwd;
     else return "Error to get current directory";
 }
@@ -137,172 +144,127 @@ char *cmd_cd(const char *path) {
 }
 
 char *cmd_ls() {
-    static char ls_buffer[1024];
-    memset(ls_buffer, 0, sizeof(ls_buffer));
+    static char ls[1024];
+    memset(ls, 0, sizeof(ls));
 
     DIR *dir = opendir(".");
     if (dir == NULL) {
         return "Failed to open directory";
     }
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        strncat(ls_buffer, entry->d_name, sizeof(ls_buffer) - strlen(ls_buffer) - 1);
-        strncat(ls_buffer, "\n", sizeof(ls_buffer) - strlen(ls_buffer) - 1);
+    struct dirent *node;
+    while ((node = readdir(dir)) != NULL) {
+        strncat(ls, node->d_name, sizeof(ls) - strlen(ls) - 1);
+        strncat(ls, "\n", sizeof(ls) - strlen(ls) - 1);
     }
 
     closedir(dir);
-    return ls_buffer;
+    return ls;
 }
 
+// //https://github.com/bddicken/languages/blob/eaf4b48be17827f254f8ff08aca217a9605bbcc3/levenshtein/c/run.c
 char *cmd_cat(const char *file_path) {
-    static char cat_buffer[4096];
-    memset(cat_buffer, 0, sizeof(cat_buffer));
-
-    FILE *file = fopen(file_path, "r");
-    if (file == NULL) return "Failed to open file";
-
-    char *current_pos = cat_buffer;
-    size_t rem_size = sizeof(cat_buffer) - 1;
-    size_t n;
-
-    while ((n = fread(current_pos, 1, rem_size, file)) > 0) {
-        current_pos += n;
-        rem_size -= n;
-
-        if (rem_size == 0) break;
+    // First read entire file content
+    FILE* file = fopen(file_path, "r");
+    if (!file) {
+        fprintf(stderr, "Could not open file: %s\n", file_path);
+        return ("Failed to open file");
     }
+
+    // Get file size
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char *content = malloc(file_size + 1);
+    if (!content) {
+        fclose(file);
+        return ("Failed to allocate memory");
+    }
+
+    fread(content, 1, file_size, file);
+    content[file_size] = '\0';
 
     fclose(file);
-    return cat_buffer;
+    return (content);
 }
 
-// char *cmd_send(int client_sock, const char *file_path) {
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-char *execute_command(char **args, char *input_file, char *output_file) {
-    int pipe_fd[2];
-    if (pipe(pipe_fd) == -1) {
-        perror("pipe");
-        return "Pipe error";
+char * read_file(const char* filename) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        return strdup("Failed to open file");
     }
 
-    pid_t pid = fork();
-    if (pid == 0) {
-        close(pipe_fd[0]);
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    // fseek(file, 0, SEEK_SET);
+    rewind(file); 
 
-        if (input_file) {
-            int fd = open(input_file, O_RDONLY);
-            if (fd < 0) {
-                perror("open");
-                exit(EXIT_FAILURE);
-            }
-            dup2(fd, STDIN_FILENO);
-            close(fd);
-        }
-
-        if (output_file) {
-            int fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd < 0) {
-                perror("open");
-                exit(EXIT_FAILURE);
-            }
-            dup2(fd, STDOUT_FILENO);
-            close(fd);
-        } else {
-            dup2(pipe_fd[1], STDOUT_FILENO);
-        }
-
-        close(pipe_fd[1]);
-
-        if (execvp(args[0], args) == -1) {
-            perror("execvp");
-            exit(EXIT_FAILURE);
-        }
-    } else if (pid < 0) {
-        perror("fork");
-        return "Fork error";
-    } else {
-        close(pipe_fd[1]);
-
-        int status;
-        waitpid(pid, &status, 0);
-
-        char buffer[4096];
-        ssize_t count = read(pipe_fd[0], buffer, sizeof(buffer) - 1);
-        if (count < 0) {
-            perror("read");
-            close(pipe_fd[0]);
-            return "Read error";
-        }
-        buffer[count] = '\0';
-
-        close(pipe_fd[0]);
-        return strdup(buffer);
+    char *content = malloc((size_t)file_size + 1);
+    if (!content) {
+        fclose(file);
+        return strdup("Failed to allocate memory");
     }
 
-    return NULL;
+    size_t read_size = fread(content, 1, file_size, file);
+    if (read_size != (size_t)file_size) {
+        free(content);
+        fclose(file);
+        return strdup("Failed to read file");
+    }
+    content[file_size] = '\0';
+
+    fclose(file);
+    return content;
 }
 
-void parse_redirections(char *command, char **input_file, char **output_file) {
-    char *redir_token;
-
-    if ((redir_token = strchr(command, '<')) != NULL) {
-        *redir_token = '\0';
-        *input_file = strtok(redir_token + 1, " ");
-        *input_file = trim(*input_file);
-    }
-
-    if ((redir_token = strchr(command, '>')) != NULL) {
-        *redir_token = '\0';
-        *output_file = strtok(redir_token + 1, " ");
-        *output_file = trim(*output_file);
+void  write_file(const char* filename, const char* content) {
+    if (content) {
+        FILE *file = fopen(filename, "w");
+        if (!file) {
+            perror("Error to open file");
+            return;
+        }
+        fputs(content, file);
+        fclose(file);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 char *shell_process_input(char *command) {
     char *output = NULL;
@@ -310,54 +272,94 @@ char *shell_process_input(char *command) {
     char *comment_position = strchr(command, '#');
     if (comment_position) *comment_position = '\0';
 
-    if (strchr(command, ';') == NULL) {
+    if (strchr(command, ';') == NULL) { // Only one command
         char *trimmed_command = trim(command);
         char *input_file = NULL;
         char *output_file = NULL;
+        char *redirection = NULL;
 
-        parse_redirections(trimmed_command, &input_file, &output_file);
+        int redirection_flag = 0;
+        if ((redirection = strchr(command, '<')) != NULL) {
+            redirection_flag = 1;
 
-        char *args[64];
-        int i = 0;
-        char *arg = strtok(trimmed_command, " ");
-        while (arg != NULL) {
-            args[i++] = arg;
-            arg = strtok(NULL, " ");
+            *redirection = '\0';
+            input_file = strtok(redirection + 1, " "); // extract filename, string after '<'
+            input_file = trim(input_file); //trim name of the file 
+
+            trimmed_command = trim(command);
         }
-        args[i] = NULL;
+    
+        if ((redirection = strchr(command, '>')) != NULL) {
+            redirection_flag = 2;
 
-        output = execute_command(args, input_file, output_file);
-    } else {
-        char *commands = strtok(command, ";");
-        while (commands != NULL) {
-            char *trimmed_command = trim(commands);
+            *redirection = '\0';
+            output_file = strtok(redirection + 1, " "); // extract filename, string after '>'
+            output_file = trim(output_file); // trim name of the file
 
-            char *input_file = NULL;
-            char *output_file = NULL;
+            trimmed_command = trim(command);
+        }
 
-            parse_redirections(trimmed_command, &input_file, &output_file);
+        if (redirection_flag == 1) {
+            if(strcmp(trimmed_command, "cat" ) == 0) {
+                char modified_command[512];
+                snprintf(modified_command, sizeof(modified_command), "cat %s", input_file);
 
-            char *args[64];
-            int i = 0;
-            char *arg = strtok(trimmed_command, " ");
-            while (arg != NULL) {
-                args[i++] = arg;
-                arg = strtok(NULL, " ");
-            }
-            args[i] = NULL;
-
-            char *sub_output = execute_command(args, input_file, output_file);
-            if (output == NULL) {
-                output = strdup(sub_output);
+                output = shell_process_command(modified_command);
             } else {
-                output = realloc(output, strlen(output) + strlen(sub_output) + 2);
-                strcat(output, "\n");
-                strcat(output, sub_output);
+
+                char *file_content = read_file(input_file);
+                if (file_content) {
+                    output = shell_process_command(file_content);
+                    free(file_content);
+                }
+            }
+        } else if (redirection_flag == 2) {
+            char *command_output = shell_process_command(trimmed_command);
+            if (command_output) {
+                write_file(output_file, command_output);
+                free(command_output);
+            }
+        } else {
+            output = shell_process_command(trimmed_command);
+        }
+    } else {
+        char *current_command = strtok(command, ";");
+        size_t result_size = 0;
+
+        while (current_command != NULL) {
+            char *trimmed_command = trim(current_command);
+
+            char *command_output = shell_process_input(trimmed_command);
+            if (command_output) {
+                size_t command_output_len = strlen(command_output);
+
+                output = realloc(output, result_size + command_output_len + 2);
+                if (!output) {
+                    free(command_output);
+                    free(command);
+                    return strdup("Error: Memory allocation failed");
+                }
+
+                strcpy(output + result_size, command_output);
+                result_size += command_output_len;
+
+                if(output && (output[0] != '\n' || output[0] != '\0') ) {
+                    output[result_size] = '\n';
+                    result_size++;
+                }
+
+                free(command_output);
             }
 
-            commands = strtok(NULL, ";");
+            current_command = strtok(NULL, ";");
         }
+
+        if (output) {
+            output[result_size - 1] = '\0';
+        }
+
     }
 
-    return output ? output : strdup("");
+    // return output ? output : strdup("");
+    return output ? strdup(output) : strdup("");
 }

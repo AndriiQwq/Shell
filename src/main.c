@@ -3,17 +3,22 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "config.h"
+#include <pthread.h>
+
 #include "shell.h"
 #include "keepalive.h"
 
+#include "logger.h"
+#include "env_loader.h"
+
+// Global variables
 extern char isServer;
 extern char isClient;
 extern int port;
 extern char *socketName;
 extern char *ip;
 
-void help();
+void *server_thread(void *arg);
 
 int main(int argc, char *argv[]) {
     if (argc == 1) {
@@ -25,6 +30,15 @@ int main(int argc, char *argv[]) {
                 printf("Server was running\n");
                 isServer = 1;
             } else if (strcmp(argv[i], "-c") == 0) {
+                // Internal cmmand
+                if (i + 1 < argc && strcmp(argv[i + 1], "-halt") == 0) {
+                    printf("Halting system...\n");
+                    exit(0);
+                } else if (i + 1 < argc && strcmp(argv[i + 1], "-quit") == 0) {
+                    printf("Quiting system...\n");
+                    exit(0);
+                }
+
                 printf("Client was running\n");
                 isClient = 1;
             } else if (strcmp(argv[i], "-p") == 0) {
@@ -44,8 +58,16 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else if (strcmp(argv[i], "-h") == 0) {
-                help();
+                printf("%s", cmd_help());
                 return 0;
+            } else if (strcmp(argv[i], "-l") == 0) {
+                if (i + 1 < argc) {
+                    log_file_path = argv[++i];
+                    printf("Log file path set to %s\n", log_file_path);
+                } else {
+                    printf("Error, log file not provided\n");
+                    return 1;
+                }
             } else if (strcmp(argv[i], "-t") == 0) {
                 if (i + 1 < argc) {
                     keep_alive.timeout = atoi(argv[++i]);
@@ -62,13 +84,24 @@ int main(int argc, char *argv[]) {
                     printf("Error, IP not provided\n");
                     return 1;
                 }
+            } else if (strcmp(argv[i], "-C") == 0) {
+                if (i + 1 < argc) {
+                    config_path = argv[++i];
+                    printf("Config file path set to %s\n", config_path);
+                } else {
+                    printf("Error, config path not provided\n");
+                    return 1;
+                }
             } else {
                 printf("Error occcured, unknown argument.");
-                help();
+                printf("%s", cmd_help());
                 return 1;
             }
         }
     }
+
+    // Load environment variables from .env file
+    if (config_path) load_env_file(config_path);
 
     // Get enveronment variables, if .env file exists
     char *keepalive_interval_env = getenv("KEEPALIVE_INTERVAL");
@@ -79,11 +112,69 @@ int main(int argc, char *argv[]) {
     // keep_alive.probes = getenv("KEEPALIVE_PROBES") ? (unsigned int) atoi(getenv("KEEPALIVE_PROBES")) : keep_alive.probes;
     // keep_alive.timeout = getenv("KEEPALIVE_TIMEOUT") ? (unsigned int) atoi(getenv("KEEPALIVE_TIMEOUT")) : keep_alive.timeout;
 
-    if (isServer) {
-        if (socketName) {
-            run_unix_server(socketName);
+    // Get log file path from environment variable
+    char *log_file_path_env = getenv("LOG_FILE_PATH");
+    if (log_file_path_env) {
+        log_file_path = log_file_path_env;
+        printf("Log file path set to %s from evirement file.\n", log_file_path);
+    }
+
+    if(log_file_path != NULL && log_file_exists(log_file_path) == 0) {
+        create_log_file(log_file_path);
+        if (isClient) {
+            write_log("SYSTEM", "START CLIENT");
         } else {
-            run_server(port);
+            write_log("SYSTEM", "START SERVER");
+        }
+    } else if(log_file_path != NULL && log_file_exists(log_file_path) != 0){
+        if (isClient) {
+            write_log("SYSTEM", "RESTART CLIENT");
+        } else {
+            write_log("SYSTEM", "RESTART SERVER");
+        }
+    }
+
+    if (isServer) {
+        pthread_t server_thread_id;
+        if (pthread_create(&server_thread_id, NULL, server_thread, NULL) != 0) {
+            perror("Failed to create server thread");
+            return 1;
+        }
+
+        char buffer[1024];
+        while (1) { // Internal server shell loop
+            fgets(buffer, 1024, stdin);
+
+            if (strlen(buffer) == 1 && buffer[0] == '\n') {
+                printf("%s", get_prompt());
+                continue;
+            }
+
+            buffer[strcspn(buffer, "\n")] = 0;
+
+            // LOG
+            write_log("SERVER", buffer);
+        
+            if (strcmp(buffer, "quit") == 0) { // Stop all conection
+                // TODO
+                exit(0);
+            }
+        
+            if (strcmp(buffer, "halt") == 0) { // Stop all conection and exit program
+                if (pthread_cancel(server_thread_id) != 0) {
+                    perror("pthread_cancel");
+                }
+                pthread_join(server_thread_id, NULL);
+                exit(0);
+            }
+
+            char *result = shell_process_input(buffer);
+            if(result) {
+                printf("%s\n", result);
+                free(result);
+            } else {
+                printf("%s", get_prompt());
+            }
         }
     } else if (isClient) {
         if (socketName) {
@@ -92,30 +183,21 @@ int main(int argc, char *argv[]) {
             run_client(port);
         }
     } else {
-        help();
+        printf("%s", cmd_help());
         return 1;
     }
 
     return 0;
 }
 
-void help() {
-    printf(
-        "Shell\n"
-        "Author: Andrii Dokaniev\n"
-        "Purpose: Simple and speed client/server shell, optimized for concrete tasks\n"
-        "Usage: shell [-s | -c] [-p port] [-u socket]\n"
-        "Options:\n"
-        "  -s          Run as server\n"
-        "  -c          Run as client\n"
-        "  -p port     Specify port number\n"
-        "  -u socket   Specify socket name\n"
-        "  -i ip       Specify IP address\n"
-        "  -h          Show help message\n"
-        "  -t timeout  Set inactivity timeout\n"
-        "\n"
-        "Commands:\n"
-        "  help        Show help message\n"
-        "  quit        Close the connection\n"
-        "  halt        Stop the server\n");
+void *server_thread(void *arg) {
+    (void)arg; // Don't use arg
+
+    if (socketName) {
+        run_unix_server(socketName);
+    } else {
+        run_server(port);
+    }
+
+    return NULL;
 }
