@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "shell.h"
+#include "keepalive.h"
 
 extern char isServer;
 extern char isClient;
@@ -45,6 +46,14 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(argv[i], "-h") == 0) {
                 help();
                 return 0;
+            } else if (strcmp(argv[i], "-t") == 0) {
+                if (i + 1 < argc) {
+                    keep_alive.timeout = atoi(argv[++i]);
+                    printf("Inactivity timeout set to %ld seconds\n", keep_alive.timeout);
+                } else {
+                    printf("Error, timeout not provided\n");
+                    return 1;
+                }
             } else if (strcmp(argv[i], "-i") == 0) {
                 if (i + 1 < argc) {
                     ip = argv[++i];
@@ -60,6 +69,15 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
+    // Get enveronment variables, if .env file exists
+    char *keepalive_interval_env = getenv("KEEPALIVE_INTERVAL");
+    if (keepalive_interval_env) {
+        keep_alive.interval = (unsigned int)atoi(keepalive_interval_env);
+    }    
+
+    // keep_alive.probes = getenv("KEEPALIVE_PROBES") ? (unsigned int) atoi(getenv("KEEPALIVE_PROBES")) : keep_alive.probes;
+    // keep_alive.timeout = getenv("KEEPALIVE_TIMEOUT") ? (unsigned int) atoi(getenv("KEEPALIVE_TIMEOUT")) : keep_alive.timeout;
 
     if (isServer) {
         if (socketName) {
@@ -94,6 +112,7 @@ void help() {
         "  -u socket   Specify socket name\n"
         "  -i ip       Specify IP address\n"
         "  -h          Show help message\n"
+        "  -t timeout  Set inactivity timeout\n"
         "\n"
         "Commands:\n"
         "  help        Show help message\n"

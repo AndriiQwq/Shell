@@ -178,79 +178,50 @@ char *cmd_cat(const char *file_path) {
 }
 
 // char *cmd_send(int client_sock, const char *file_path) {
-//     send_file(client_sock, file_path);
-//     return "File sent";
-// }
 
 
 
 
-// char *shell_process_input(const char *command) {
-//     char *result = NULL;
-
-//     for (int i = 0; i < strlen(command); i++) {
-//         if (command[i] != '#' && command[i] != ';' && command[i] != '<' && command[i] != '>' && command[i] != '|' && command[i] != '\\') {
-//             continue;
-//         } else {
-//             process_special_characters(command);
-//         }
-//     }
-
-//     if (result == NULL) {
-//         result = shell_process_command(command);
-//     }
-
-//     return result;
-// }
 
 
-// char *shell_process_input(const char *command) {
-//     char *final_result = NULL;
-//     char *command_copy = strdup(command);
 
-//     // Comment handling
-//     char *comment_position = strchr(command_copy, '#');
-//     if (comment_position) *comment_position = '\0';
 
-//     // Some commands handling
-//     char *commands = strtok(command_copy, ";");
-//     while (commands != NULL) {
-//         char *trimmed_command = trim(commands);
 
-//         if (strchr(trimmed_command, '|')) {
-//             execute_pipeline(trimmed_command);
-//         } else {
-//             char *input_file = NULL;
-//             char *output_file = NULL;
-//             char *base_command = strdup(trimmed_command);
-//             if (!base_command) {
-//                 perror("strdup");
-//                 free(command_copy);
-//                 return "Memory allocation error";
-//             }
 
-//             parse_redirections(base_command, &input_file, &output_file);
 
-//             char *args[64];
-//             int i = 0;
-//             char *arg = strtok(base_command, " ");
-//             while (arg != NULL) {
-//                 args[i++] = arg;
-//                 arg = strtok(NULL, " ");
-//             }
-//             args[i] = NULL;
 
-//             execute_command(args, input_file, output_file, -1, -1);
 
-//             free(base_command);
-//         }
 
-//         commands = strtok(NULL, ";");
-//     }
 
-//     free(command_copy);
-//     return final_result ? final_result : strdup("");
-// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 char *execute_command(char **args, char *input_file, char *output_file) {

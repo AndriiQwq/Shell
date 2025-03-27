@@ -8,14 +8,52 @@
 #include <sys/un.h>
 #include <dirent.h>
 
+#include <netinet/tcp.h>
+#include <time.h>
+#include <signal.h> // For kill() and SIGTERM
+#include <errno.h>  // For ECONNRESET
+
 #include "shell.h"
 #include "utils.h" // trim 
 #include "script_reader.h" // process_script
+#include <pthread.h>
+
+#include "keepalive.h"
+
+#define BUFFER_SIZE 1024
 
 void log_command_execution(const char *command, const char *result, const char *prompt) {
     printf("%s\n", command);
     printf("%s\n", result);
     printf("%s", prompt);
+}
+
+void process_command_execution(int client_sock, char *buffer) {
+    if(strncmp(buffer, "run ", 4) == 0) {
+        char *script_path = buffer + 4;
+        char *script_output = process_script(script_path);
+        write(client_sock, script_output, strlen(script_output));
+
+        log_command_execution(buffer, script_output, get_prompt());
+        free(script_output);
+    } else {
+        char *result = shell_process_input(buffer);
+        char combined[BUFFER_SIZE];
+        snprintf(combined, BUFFER_SIZE, "%s\n%s", result, get_prompt());
+        write(client_sock, combined, strlen(combined));
+
+        log_command_execution(buffer, result, get_prompt());
+        free(result);
+    }
+}
+
+int receive_client_input(int client_sock, char *buffer) {
+    memset(buffer, 0, BUFFER_SIZE);
+    int bytes_read = read(client_sock, buffer, BUFFER_SIZE - 1);
+    
+    trim(buffer); // Trim input command
+
+    return bytes_read;
 }
 
 void run_server(int port) {
@@ -27,7 +65,6 @@ void run_server(int port) {
 
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
-    char buffer[1024];
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -45,62 +82,86 @@ void run_server(int port) {
         exit(1);
     }
 
-    printf("Waiting for connections...\n");
-    int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
-    if (client_sock < 0) {
-        perror("accept");
-        close(server_sock);
-        exit(1);
-    }
+    while(1){
+        memset(&client_addr, 0, BUFFER_SIZE);
 
-    printf("Client connected\n");
-    write(client_sock, get_prompt(), strlen(get_prompt()));
+        printf("Waiting for connections...\n");
+        int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
+        if (client_sock < 0) {
+            perror("accept");
+            close(server_sock);
+            exit(1);
+        }
 
-    while (1) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytes_read = read(client_sock, buffer, sizeof(buffer) - 1);
-        if (bytes_read < 0) {
-            perror("read");
+        enable_keepalive(client_sock);
+
+        char buffer[BUFFER_SIZE];
+        printf("Client connected\n");
+        write(client_sock, get_prompt(), strlen(get_prompt()));
+
+
+
+        
+        time_t last_activity_time = time(NULL);
+
+        pthread_t keepalive_thread_id;
+        KeepAliveArgs keepalive_args = {client_sock, &last_activity_time, keep_alive.timeout};
+        if (pthread_create(&keepalive_thread_id, NULL, keepalive_thread, &keepalive_args) != 0) {
+            perror("pthread_create");
             close(client_sock);
             close(server_sock);
             exit(1);
-        } else if (bytes_read == 0) {
-            printf("Client disconnected\n");
-            break;
         }
 
-        trim(buffer); // Trim input command
+        while (1) {
+            memset(buffer, 0, BUFFER_SIZE);
 
-        if(strncmp(buffer, "run ", 4) == 0) {
-            char *script_path = buffer + 4;
-            char *script_output = process_script(script_path);
-            write(client_sock, script_output, strlen(script_output));
+            int bytes_read = receive_client_input(client_sock, buffer);
+            if (bytes_read > 0) {
+                last_activity_time = time(NULL);
 
-            log_command_execution(buffer, script_output, get_prompt());
-            free(script_output);
-        } else {
-            char *result = shell_process_input(buffer);
-            char combined[1024];
-            snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
-            write(client_sock, combined, strlen(combined));
+                if (strcmp(buffer, "quit") == 0) {
+                    printf("Client exit\n");
+                    break;
+                } else if (strcmp(buffer, "halt") == 0) {
+                    printf("Server halting\n");
+                    close(client_sock);
+                    close(server_sock);
+                    exit(0);
+                }
 
-            log_command_execution(buffer, result, get_prompt());
-            free(result);
+                process_command_execution(client_sock, buffer);
+            } else if (bytes_read < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // Temporary error, continue
+                    continue;
+                } else if (errno == ECONNRESET) {
+                    // the connection has been forcibly closed by another party (e.g. server or client)
+                    break;
+                } else {
+                    perror("read");
+                    close(client_sock);
+                    close(server_sock);
+                    exit(1);
+                }
+            } else if (bytes_read == 0) {
+                printf("Client disconnected\n"); // Client close the connection
+                break;
+            }
         }
-
-        if (strcmp(buffer, "quit") == 0) {
-            printf("Client requested to quit\n");
-            break;
-        } else if (strcmp(buffer, "halt") == 0) {
-            printf("Server halting\n");
-            close(client_sock);
-            close(server_sock);
-            exit(0);
+        
+        if (pthread_cancel(keepalive_thread_id) != 0) {
+            perror("pthread_cancel");
         }
+        pthread_join(keepalive_thread_id, NULL);
+
+        close(client_sock);
+        printf("Waiting for a new connection...\n");
+
     }
 
-    close(client_sock);
     close(server_sock);
+    exit(0); // Exit the server, and stop all sub-threads
 }
 
 void run_unix_server(const char *socket_path) {
@@ -137,56 +198,68 @@ void run_unix_server(const char *socket_path) {
         exit(EXIT_FAILURE);
     }
 
+    enable_keepalive(client_sock);
+    
+    char buffer[BUFFER_SIZE];
     printf("Client connected\n");
     write(client_sock, get_prompt(), strlen(get_prompt()));
 
-    char buffer[1024];
+
+    time_t last_activity_time = time(NULL);
+
+    pthread_t keepalive_thread_id;
+    KeepAliveArgs keepalive_args = {client_sock, &last_activity_time, keep_alive.timeout};
+    if (pthread_create(&keepalive_thread_id, NULL, keepalive_thread, &keepalive_args) != 0) {
+        perror("pthread_create");
+        close(client_sock);
+        close(server_sock);
+        exit(1);
+    }
+
     while (1) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytes_read = read(client_sock, buffer, sizeof(buffer) - 1);
-        if (bytes_read < 0) {
-            perror("read");
-            close(client_sock);
-            close(server_sock);
-            exit(EXIT_FAILURE);
+        memset(buffer, 0, BUFFER_SIZE);
+
+        int bytes_read = receive_client_input(client_sock, buffer);
+        if (bytes_read > 0) {
+            last_activity_time = time(NULL);
+
+            if (strcmp(buffer, "quit") == 0) {
+                printf("Client exit\n");
+                break;
+            } else if (strcmp(buffer, "halt") == 0) {
+                printf("Server halting\n");
+                close(client_sock);
+                close(server_sock);
+                unlink(socket_path);
+                exit(0);
+            }
+
+            process_command_execution(client_sock, buffer);
+        } else if (bytes_read < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Temporary error, continue
+                continue;
+            } else if (errno == ECONNRESET) {
+                // the connection has been forcibly closed by another party (e.g. server or client)
+                break;
+            } else {
+                perror("read");
+                close(client_sock);
+                close(server_sock);
+                unlink(socket_path);
+                exit(1);
+            }
         } else if (bytes_read == 0) {
-            printf("Client disconnected\n");
+            printf("Client disconnected\n"); // Client close the connection
             break;
-        }
-
-        trim(buffer); // Trim input command
-
-        if(strncmp(buffer, "run ", 4) == 0) {
-            char *script_path = buffer + 4;
-            char *script_output = process_script(script_path);
-            write(client_sock, script_output, strlen(script_output));
-
-            log_command_execution(buffer, script_output, get_prompt());
-            free(script_output);
-        } else {
-            char *result = shell_process_input(buffer);
-            char combined[1024];
-            snprintf(combined, sizeof(combined), "%s\n%s", result, get_prompt());
-            write(client_sock, combined, strlen(combined));
-
-            log_command_execution(buffer, result, get_prompt());
-            free(result);
-        }
-
-
-        if (strcmp(buffer, "quit") == 0) {
-            printf("Client requested to quit\n");
-            break;
-        } else if (strcmp(buffer, "halt") == 0) {
-            printf("Server halting\n");
-            close(client_sock);
-            close(server_sock);
-            unlink(socket_path);
-            exit(0);
         }
     }
 
     close(client_sock);
     close(server_sock);
     unlink(socket_path);
+    if (pthread_cancel(keepalive_thread_id) != 0) {
+        perror("pthread_cancel");
+    }
+    exit(0); // Exit the server, and stop all sub-threads
 }
