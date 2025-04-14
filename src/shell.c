@@ -15,13 +15,6 @@
 #include "shell.h"
 #include "utils.h"
 
-
-char isServer = 0;
-char isClient = 0;
-int port = 0;
-char *socketName = NULL;
-char *ip = "127.0.0.1";
-
 char *get_prompt() {
     static char prompt[256];
 
@@ -41,51 +34,52 @@ char *get_prompt() {
     return prompt;
 }
 
-// void send_file(int client_sock, const char *file_path) {
-//     printf("TODO: send file %s\n", file_path);
-// }
-
-// void receive_file(int sock, const char *output_file) {
-//     printf("TODO: receive file %s\n", output_file);
-// }
-
 
 char *shell_process_command(const char *command) {
     if (strcmp(command, "help") == 0) {
-        return cmd_help();
+        return command_help();
     } else if (strcmp(command, "quit") == 0) {
-        return cmd_quit();
+        return command_quit();
     } else if (strcmp(command, "halt") == 0) {
-        return cmd_halt();
+        return command_halt();
     } else if (strcmp(command, "whoami") == 0) {
-        return cmd_whoami();
+        return command_whoami();
     } else if (strcmp(command, "hostname") == 0) {
-        return cmd_hostname();
+        return command_hostname();
     } else if (strcmp(command, "pwd") == 0) {
-        return cmd_pwd();
+        return command_pwd();
     } else if (strncmp(command, "cd ", 3) == 0) {
         const char *path = command + 3;
-        return cmd_cd(path);
+        return command_cd(path);
     } else if (strcmp(command, "ls") == 0) {
-        return cmd_ls();
+        return command_ls();
     } else if (strncmp(command, "cat ", 4) == 0) {
         const char *file_path = command + 4;
-        return strdup(cmd_cat(file_path));
+        return strdup(command_cat(file_path));
     } else if (strncmp(command, "echo ", 5) == 0) {
         const char *message = command + 5;
-        return strdup(message); // Duplicate S, returning an identical malloc'd string.
+        return strdup(message); // Duplicate and return string.
+    } else if (strncmp(command, "run ", 4) == 0) {
+        const char *script_path = command + 4;
+        char *script_output = process_script(script_path);
+        return script_output;
+    } else if (strncmp(command, "wc -l", 6) == 0) {
+        const char *input = command + 6;
+        return command_wc(input);
     } else {
         return "";
     }
 }
 
 
-char *cmd_help() {
+
+char *command_help() {
     return (
-        "Shell\n"
         "Author: Andrii Dokaniev\n"
-        "Purpose: Simple and speed client/server shell, optimized for concrete tasks\n"
-        "Usage: shell [-s | -c] [-p port] [-u socket]\n"
+        "Date: 4/12/2025\n"
+        "Usage: \n"
+        "   ./shell ...\n"
+        "   make run ARGS=\"-s -p 8071 -C .env\"\n"
         "Options:\n"
         "  -s          Run as server\n"
         "  -c          Run as client\n"
@@ -106,44 +100,89 @@ char *cmd_help() {
            "ls - list files in the current directory\n"
            "cat <file_path> - display the contents of a file\n"
            "echo <message> - display a message\n"
-           "Note: commands are case-sensitive"
+           "run <script_path> - run a script on the server\n"
            "ls > file.txt - save the output of ls to a file\n"
+           "wc -l - count the number of lines\n"
+           "Special symbols:\n"
+           "  ; - separate multiple commands\n"
+           "  < - redirect input from a file\n"
+           "  > - redirect output to a file\n"
+           "  # - comment\n"
+           "  | - pipe\n"
+           "Example:\n"
+           "  ls | wc -l\n"
+           "  cat script.txt | wc -l"
+           "Bonus tasks:\n"
+           "  1, 7, 11, 12, 13, 15, 16, 18, 20, 21"
     );
 }
 
-char *cmd_quit() {
+char *command_quit() {
     return "Connection closed";
 }
 
-char *cmd_halt() {
+char *command_halt() {
     return "Server stopped";
 }
 
-char *cmd_whoami() {
+char *command_whoami() {
     uid_t uid = getuid();
     struct passwd *pw = getpwuid(uid);
     if (pw) return pw->pw_name;
     else return "Error to get username";
 }
 
-char *cmd_hostname() {
+char *command_hostname() {
     static char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) == 0)  return hostname;
     else return "Error to get hostname";
 }
 
-char *cmd_pwd() {
+char *command_pwd() {
     static char cwd[256];
     if (getcwd(cwd, sizeof(cwd)) != NULL) return cwd;
     else return "Error to get current directory";
 }
 
-char *cmd_cd(const char *path) {
-    if (chdir(path) == 0) return cmd_pwd();
+char *command_cd(const char *path) {
+    if (chdir(path) == 0) return command_pwd();
     else return "Failed to change directory";
 }
 
-char *cmd_ls() {
+char *command_wc(const char *input) {
+    if (!input || input[0] == '\0') {
+        char *result = malloc(2);
+        if (!result) return strdup("Memory allocation error");
+        strcpy(result, "0");
+        return result;
+    }
+
+    char *input_copy = strdup(input);
+    if (!input_copy) {
+        return strdup("Memory allocation error");
+    }
+
+    int count = 0;
+    char *saveptr = NULL;
+    char *line = strtok_r(input_copy, "\n", &saveptr);
+    
+    while (line != NULL) {
+        count++;
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+    
+    free(input_copy);
+    
+    char *result = malloc(20);
+    if (!result) {
+        return strdup("Memory allocation error");
+    }
+    
+    snprintf(result, 20, "%d", count);
+    return result;
+}
+
+char *command_ls() {
     static char ls[1024];
     memset(ls, 0, sizeof(ls));
 
@@ -163,7 +202,7 @@ char *cmd_ls() {
 }
 
 // //https://github.com/bddicken/languages/blob/eaf4b48be17827f254f8ff08aca217a9605bbcc3/levenshtein/c/run.c
-char *cmd_cat(const char *file_path) {
+char *command_cat(const char *file_path) {
     // First read entire file content
     FILE* file = fopen(file_path, "r");
     if (!file) {
@@ -233,44 +272,54 @@ void  write_file(const char* filename, const char* content) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 char *shell_process_input(char *command) {
     char *output = NULL;
 
     char *comment_position = strchr(command, '#');
     if (comment_position) *comment_position = '\0';
+
+    char *pipe_position = strchr(command, '|');
+    if (pipe_position) {
+        *pipe_position = '\0';
+        char *first_command = trim(command);
+        char *second_command = trim(pipe_position + 1);
+
+        char *first_output = shell_process_command(first_command);
+        
+        if (first_output && *first_output) {
+            if (strncmp(second_command, "wc -l", 5) == 0) {
+                output = command_wc(first_output);
+            } else {
+                char *second_output = shell_process_command(second_command);
+                if (second_output) {
+                    output = strdup(second_output);
+                    if (strcmp(second_command, "ls") != 0 && 
+                        strcmp(second_command, "pwd") != 0 &&
+                        strcmp(second_command, "whoami") != 0 &&
+                        strcmp(second_command, "hostname") != 0 &&
+                        strcmp(second_command, "help") != 0 &&
+                        strcmp(second_command, "quit") != 0 &&
+                        strcmp(second_command, "halt") != 0) 
+                        {
+                            free(second_output);
+                    } 
+                }
+            }
+
+            if (strcmp(first_command, "ls") != 0 && 
+                strcmp(first_command, "pwd") != 0 &&
+                strcmp(first_command, "whoami") != 0 &&
+                strcmp(first_command, "hostname") != 0 &&
+                strcmp(first_command, "help") != 0 &&
+                strcmp(first_command, "quit") != 0 &&
+                strcmp(first_command, "halt") != 0) {
+                free(first_output);
+            }
+        }
+
+        return output ? output : strdup("");
+    }
+
 
     if (strchr(command, ';') == NULL) { // Only one command
         char *trimmed_command = trim(command);

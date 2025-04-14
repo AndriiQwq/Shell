@@ -25,14 +25,16 @@
 
 #define BUFFER_SIZE 1024
 
-void log_command_execution(const char *command, const char *result, const char *prompt) {
-    printf("%s\n", command);
-    printf("%s\n", result);
-    printf("%s", prompt);
-}
+// void log_command_execution(const char *command, const char *result, const char *prompt) {
+//     printf("%s\n", command);
+//     printf("%s\n", result);
+//     printf("%s", prompt);
+// }
 
 void process_command_execution(int client_sock, char *buffer) {
     if(strncmp(buffer, "run ", 4) == 0) {
+        write_log("CLIENT", buffer);
+
         char *script_path = buffer + 4;
         char *script_output = process_script(script_path);
         write(client_sock, script_output, strlen(script_output));

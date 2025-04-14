@@ -20,16 +20,18 @@ void run_unix_server(const char *socket_path);
 void run_client(int port);
 void run_unix_client(const char *socket_path);
 
-char *cmd_help();
-char *cmd_quit();
-char *cmd_halt();
-char *cmd_whoami();
-char *cmd_hostname();
-char *cmd_pwd();
-char *cmd_cd(const char *path);
-char *cmd_ls();
-char *cmd_cat(const char *file_path);
-// char *cmd_send(int client_sock, const char *file_path);
+char *command_help();
+char *command_quit();
+char *command_halt();
+char *command_whoami();
+char *command_hostname();
+char *command_pwd();
+char *command_cd(const char *path);
+char *command_ls();
+char *command_cat(const char *file_path);
+char *command_wc(const char *input);
+char *process_script(const char *script_path);
+// char *command_send(int client_sock, const char *file_path);
 
 void  write_file(const char* filename, const char* content);
 char * read_file(const char* filename);

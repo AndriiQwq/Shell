@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h> //kill and SIGTERM
+#include <sys/wait.h> // waitpid
 
 #include <pthread.h>
 
@@ -12,13 +14,19 @@
 #include "env_loader.h"
 
 // Global variables
-extern char isServer;
-extern char isClient;
-extern int port;
-extern char *socketName;
-extern char *ip;
+// extern char isServer;
+// extern char isClient;
+// extern int port;
+// extern char *socketName;
+// extern char *ip;
 
-void *server_thread(void *arg);
+char isServer = 0;
+char isClient = 0;
+int port = 0;
+char *socketName = NULL;
+char *ip = "127.0.0.1";
+
+//void *server_thread(void *arg);
 
 int main(int argc, char *argv[]) {
     if (argc == 1) {
@@ -58,7 +66,7 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
             } else if (strcmp(argv[i], "-h") == 0) {
-                printf("%s", cmd_help());
+                printf("%s", command_help());
                 return 0;
             } else if (strcmp(argv[i], "-l") == 0) {
                 if (i + 1 < argc) {
@@ -94,7 +102,7 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 printf("Error occcured, unknown argument.");
-                printf("%s", cmd_help());
+                printf("%s", command_help());
                 return 1;
             }
         }
@@ -135,10 +143,25 @@ int main(int argc, char *argv[]) {
     }
 
     if (isServer) {
-        pthread_t server_thread_id;
-        if (pthread_create(&server_thread_id, NULL, server_thread, NULL) != 0) {
-            perror("Failed to create server thread");
+        // pthread_t server_thread_id;
+        // if (pthread_create(&server_thread_id, NULL, server_thread, NULL) != 0) {
+        //     perror("Failed to create server thread");
+        //     return 1;
+        // }
+        pid_t pid = fork(); // Create a child process
+        if (pid < 0) {
+            perror("Failed to fork server process");
             return 1;
+        } else if (pid == 0) {
+            if (socketName) {
+                run_unix_server(socketName);
+            } else {
+                run_server(port);
+            }
+            exit(0); // Exit child process after server stop
+        } else {
+            // Parent process, continue to run shell
+            printf("Server started in process %d\n", pid);
         }
 
         char buffer[1024];
@@ -154,19 +177,33 @@ int main(int argc, char *argv[]) {
 
             // LOG
             write_log("SERVER", buffer);
-        
-            if (strcmp(buffer, "quit") == 0) { // Stop all conection
-                // TODO
+
+            if (strcmp(buffer, "quit") == 0) { // Stop Server
+                printf("Quiting system.\n");
+                kill(pid, SIGTERM); // Send signal to stop server
+                waitpid(pid, NULL, 0); // Wait for finish child process
                 exit(0);
             }
-        
+    
             if (strcmp(buffer, "halt") == 0) { // Stop all conection and exit program
-                if (pthread_cancel(server_thread_id) != 0) {
-                    perror("pthread_cancel");
-                }
-                pthread_join(server_thread_id, NULL);
+                printf("Halting system.\n");
+                kill(pid, SIGTERM); // Send signal to stop server
+                waitpid(pid, NULL, 0); // Wait for finish child process
                 exit(0);
             }
+        
+            // if (strcmp(buffer, "quit") == 0) { // Stop all conection
+            //     // TODO
+            //     exit(0);
+            // }
+        
+            // if (strcmp(buffer, "halt") == 0) { // Stop all conection and exit program
+            //     if (pthread_cancel(server_thread_id) != 0) {
+            //         perror("pthread_cancel");
+            //     }
+            //     pthread_join(server_thread_id, NULL);
+            //     exit(0);
+            // }
 
             char *result = shell_process_input(buffer);
             if(result) {
@@ -183,21 +220,21 @@ int main(int argc, char *argv[]) {
             run_client(port);
         }
     } else {
-        printf("%s", cmd_help());
+        printf("%s", command_help());
         return 1;
     }
 
     return 0;
 }
 
-void *server_thread(void *arg) {
-    (void)arg; // Don't use arg
+// void *server_thread(void *arg) {
+//     (void)arg; // Don't use arg
 
-    if (socketName) {
-        run_unix_server(socketName);
-    } else {
-        run_server(port);
-    }
+//     if (socketName) {
+//         run_unix_server(socketName);
+//     } else {
+//         run_server(port);
+//     }
 
-    return NULL;
-}
+//     return NULL;
+// }
