@@ -17,13 +17,15 @@
 #include <errno.h>  // For ECONNRESET
 #include <pthread.h>
 
-
 #include "shell.h"
 #include "keepalive.h"
 
 #include "logger.h"
 
 // void run_keep_alive_daemon(int sock, KeepAlive *keep_alive) {}
+
+extern int port;
+extern char *ip;
 
 #define BUFFER_SIZE 1024
 
@@ -62,6 +64,7 @@ void process_user_input(int sock, char *buffer) {
 
 void run_client(int port) {
     printf("Client is running on port %d\n", port);
+    printf("Client is connecting to %s\n", ip);
 
     int sock = socket(AF_INET, SOCK_STREAM, 0); // create tcp socket  
     if (sock < 0) { // check error(creation fail, ...)

@@ -152,6 +152,7 @@ void process_current_server_inputting(int client_sock, int server_sock, char *bu
 
 void run_server(int port) {
     printf("Server is running on port %d\n", port);
+    printf("Server is listening on %s\n", ip);
 
     int server_sock = socket(AF_INET, SOCK_STREAM, 0); // create socket tcp
     if (server_sock < 0) {

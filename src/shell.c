@@ -15,8 +15,17 @@
 #include "shell.h"
 #include "utils.h"
 
-#define TOK_BUFSIZE 64 // define tok buffer size 
-#define TOK_DELIM " \t\r\n\a" // def telime
+#define TOK_BUFSIZE 64 // args buffer size 
+#define TOK_DELIM " \t\r\n\a" // delimiters for tokenization command
+
+char check_internal_command(const char *command) {
+    if (strcmp(command, "help") == 0) return 1;
+    if (strcmp(command, "quit") == 0) return 1;
+    if (strcmp(command, "halt") == 0) return 1;
+    if (strncmp(command, "run ", 4) == 0) return 1;
+    if (strncmp(command, "cd ", 3) == 0) return 1;
+    return 0;
+}
 
 char *get_prompt() {
     static char prompt[256];
@@ -38,29 +47,33 @@ char *get_prompt() {
     return prompt;
 }
 
-
+// Split command into arguments 
+// Using https://brennan.io/2015/01/16/write-a-shell-in-c/
 char **split_command(const char *command) {
-    char *command_copy = strdup(command);
-    if (!command_copy) {
-        perror("strdup");
-        return NULL;
-    }
+    char *command_copy = strdup(command); // duplicate command
+    if (!command_copy) { return NULL; }
+
     int bufsize = TOK_BUFSIZE, position = 0;
     char **tokens = malloc(bufsize * sizeof(char*));
     char *token;
+
     if (!tokens) {
         free(command_copy);
+        fprintf(stderr, "lsh: allocation error\n");
         return NULL;
     }
+
     token = strtok(command_copy, TOK_DELIM);
     while (token != NULL) {
         tokens[position] = strdup(token);
         position++;
+
         if (position >= bufsize) {
             bufsize += TOK_BUFSIZE;
             tokens = realloc(tokens, bufsize * sizeof(char*));
             if (!tokens) {
                 free(command_copy);
+                fprintf(stderr, "lsh: allocation error\n");
                 return NULL;
             }
         }
@@ -72,7 +85,7 @@ char **split_command(const char *command) {
     return tokens;
 }
 
-void free_args(char **args) {
+void free_args(char **args) { // free memory for args of tokens
     if (!args) return;
     
     for (int i = 0; args[i] != NULL; i++) {
@@ -83,96 +96,76 @@ void free_args(char **args) {
 
 // Launching external commands
 char *launch_process(const char *command) {
-    char **args = split_command(command);
-    if (!args || !args[0]) {
+    char **args = split_command(command); // try to split command
+    if (!args || !args[0]) { // handle error
         if (args) free_args(args);
         return strdup("Invalid command");
     }
-    pid_t pid;
-    int pipefd[2];
-    
-    // Create a pipe 
-    if (pipe(pipefd) == -1) {
-        perror("pipe");
+
+    int pipefd[2]; // Pipe file descriptors, 0 for read, 1 for write
+    if (pipe(pipefd) == -1) { // Create a pipe error
         free_args(args);
         return strdup("Failed to create pipe");
     }
-    pid = fork();
-    if (pid == 0) {
-        // Child process
-        close(pipefd[0]); // close pipe read 
-        
-        // Stdout -> pipe
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        
-        // Execute command
-        if (execvp(args[0], args) == -1) {
-            char error_msg[100];
-            snprintf(error_msg, sizeof(error_msg), "Command not found: %s", args[0]);
-            write(STDERR_FILENO, error_msg, strlen(error_msg));
-            exit(EXIT_FAILURE);
-        }
-        
-        exit(EXIT_SUCCESS);
-    } else if (pid < 0) {
-        // Fork error
-        perror("fork");
+
+    pid_t pid = fork(); // Fork a child process
+    if (pid < 0) { // Fork error
         free_args(args);
         close(pipefd[0]);
         close(pipefd[1]);
         return strdup("Failed to fork process");
-    } else {
-        // Parent process
+    } else if (pid == 0) { // Child process
+        // Child process
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        
-        // Read pipe output
-        char buffer[4096];
-        ssize_t bytes_read;
-        char *result = malloc(1);
-        if (!result) {
-            free_args(args);
-            close(pipefd[0]);
-            return strdup("Memory allocation error");
-        }
-        result[0] = '\0';
-        size_t total_bytes = 0;
-        
-        while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[bytes_read] = '\0';
-            char *new_result = realloc(result, total_bytes + bytes_read + 1);
+
+        execvp(args[0], args);
+        fprintf(stderr, "Command not found: %s\n", args[0]);
+        exit(1);
+    }
+
+    // Parent process
+    close(pipefd[1]);
+    char *result = NULL;
+    size_t capacity = 0, total_bytes = 0;
+    char buffer[1024]; // Smaller buffer for efficiency
+
+    // Read from pipe
+    ssize_t bytes_read; 
+    while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes_read] = '\0';// add null terminator
+
+        if (total_bytes + bytes_read >= capacity) {
+            capacity = capacity ? capacity * 2 : 1024;
+
+            char *new_result = realloc(result, capacity); // realloc memory if needed
             if (!new_result) {
                 free(result);
-                free_args(args);
                 close(pipefd[0]);
+                free_args(args);
                 return strdup("Memory allocation error");
             }
             result = new_result;
-            strcat(result, buffer);
-            total_bytes += bytes_read;
         }
-        
-        close(pipefd[0]);
-        
-        // Waiting for finish child process
-        int status;
-        waitpid(pid, &status, 0);
-        
-        free_args(args);
-        
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            return result[0] ? result : strdup("");
-        } else {
-            if (result[0]) {
-                return result;
-            } else {
-                free(result);
-                return strdup("Command execution failed");
-            }
-        }
+        memcpy(result + total_bytes, buffer, bytes_read + 1); // Copy buffer to result
+        total_bytes += bytes_read; // Update total bytes read
     }
-}
+    close(pipefd[0]);
 
+    // Wait for child process
+    int status;
+    waitpid(pid, &status, 0);
+    free_args(args);
+
+    // Check for errors
+    if (bytes_read < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        free(result);
+        return strdup("Command execution failed");
+    }
+
+    return result ? result : strdup("");
+}
 
 
 char *shell_process_command(const char *command) {
@@ -188,10 +181,7 @@ char *shell_process_command(const char *command) {
         return script_output;
     } else if (strncmp(command, "cd ", 3) == 0) { // Change directory
         const char *dir = command + 3;
-        if (chdir(dir) != 0) {
-            perror("chdir");
-            return strdup("Failed to change directory");
-        }
+        if (chdir(dir) != 0) { return strdup("Failed to change directory"); }
         return strdup("");
     } else {
         return launch_process(command);
@@ -207,15 +197,15 @@ char *command_help() {
         "   ./shell ...\n"
         "   make run ARGS=\"-s -p 8071 -C .env\"\n"
         "Options:\n"
-        "  -s -  Run as server\n"
-        "  -c -  Run as client\n"
-        "  -p port - Specify port number\n"
-        "  -u socket - Specify socket name\n"
-        "  -i ip - Specify IP address\n"
+        "  -s - Run as server\n"
+        "  -c - Run as client\n"
+        "  -p <port> - Specify port number\n"
+        "  -u <socket> - Specify socket name\n"
+        "  -i <ip> - Specify IP address\n"
         "  -h - Show help message\n"
-        "  -t timeout - Set inactivity timeout\n"
-        "  -C \n"
-        "  -l path - Set output for log file\n"
+        "  -t <timeout> - Set inactivity timeout\n"
+        "  -C <path> - load .env file\n"
+        "  -l <path> - Set output for log file\n"
         "\n"
         "Available commands:\n"
         "    help - display the help message\n"
@@ -237,6 +227,7 @@ char *command_help() {
         "    ls > output.txt\n"
         "    pwd; ls; hostname;;;;\n"
         "    cat output.txt | wc -l\n"
+        "    ps aux | grep shell\n"
     );
 }
 
@@ -249,167 +240,144 @@ char *command_halt() {
     exit(0);
 }
 
-
 char * read_file(const char* filename) {
-    FILE *file = fopen(filename, "r");
-    if (!file) {
-        return strdup("Failed to open file");
-    }
+    FILE *file = fopen(filename, "r"); // open file for reading
+    if (!file) {  return strdup("Failed to open file"); } // handle error
 
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
+    fseek(file, 0, SEEK_END); // move to the end of the file
+    long file_size = ftell(file); // get length of the file
     // fseek(file, 0, SEEK_SET);
-    rewind(file); 
+    rewind(file); // move to the beginning of the file
 
-    char *content = malloc((size_t)file_size + 1);
+    char *content = malloc((size_t)file_size + 1); // allocate memory for file content
     if (!content) {
         fclose(file);
         return strdup("Failed to allocate memory");
     }
 
-    size_t read_size = fread(content, 1, file_size, file);
+    size_t read_size = fread(content, 1, file_size, file); // read file content
     if (read_size != (size_t)file_size) {
         free(content);
         fclose(file);
         return strdup("Failed to read file");
     }
-    content[file_size] = '\0';
+    content[file_size] = '\0'; // add null terminator
 
-    fclose(file);
+    fclose(file); // close file
     return content;
 }
 
 void  write_file(const char* filename, const char* content) {
     if (content) {
-        FILE *file = fopen(filename, "w");
-        if (!file) {
-            perror("Error to open file");
-            return;
-        }
-        fputs(content, file);
+        FILE *file = fopen(filename, "w"); // open file for writing
+        if (!file) { perror("Error to open file"); return;}
+        fputs(content, file); // write content to file
         fclose(file);
     }
 }
 
 
 char *process_redirection_input(char *command, char *input_file) {
-    input_file = trim(input_file);
+    input_file = trim(input_file); // trim command
 
     int fd = open(input_file, O_RDONLY);
-    if (fd == -1) {
-        perror("open");
-        return strdup("Failed to open input file");
-    }
+    if (fd == -1) {return strdup("Failed to open input file"); }
 
-    pid_t pid;
-    int pipefd[2];
-    if (pipe(pipefd) == -1) {
-        perror("pipe");
+    int pipefd[2]; // Pipe file descriptors, 0 for read, 1 for write
+    if (pipe(pipefd) == -1) { // Create a pipe error
         close(fd);
         return strdup("Failed to create pipe");
     }
 
-    pid = fork();
-    if (pid == 0) {
-        close(pipefd[0]);
-        dup2(fd, STDIN_FILENO);
-        close(fd);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-
-        char **args = split_command(command);
-        if (!args || !args[0]) {
-            free_args(args);
-            exit(EXIT_FAILURE);
-        }
-        execvp(args[0], args);
-        dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
-        exit(EXIT_FAILURE);
-    } else if (pid < 0) {
-        perror("fork");
+    pid_t pid = fork(); // Fork a child process
+    if (pid < 0) { // Fork error
         close(fd);
         close(pipefd[0]);
         close(pipefd[1]);
         return strdup("Failed to fork process");
-    } else {
-        close(fd);
-        close(pipefd[1]);
+    } else if (pid == 0) { // Child process
+        dup2(fd, STDIN_FILENO); // Redirect standard input to the file
+        close(fd); // close the file descriptor
+        close(pipefd[0]); // close the read 
+        dup2(pipefd[1], STDOUT_FILENO); // Redirect standard output to the pipe
+        close(pipefd[1]); // close the write 
 
-        char buffer[4096];
-        ssize_t bytes_read;
-        char *result = malloc(1);
-        if (!result) {
+        char **args = split_command(command); // try to split command
+        if (!args || !args[0]) {
+            free_args(args);
+            exit(1);
+        }
+
+        execvp(args[0], args); // execute command
+        // writes formatted output
+        fprintf(stderr, "Command not found: %s\n", args[0]);
+        exit(1);
+    }
+
+    close(fd);
+    close(pipefd[1]);
+
+    char *result = NULL;
+    size_t total_bytes = 0;
+    char buffer[1024];
+    ssize_t bytes_read;
+
+    while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes_read] = '\0';
+        char *new_result = realloc(result, total_bytes + bytes_read + 1);
+        
+        if (!new_result) {
+            free(result);
             close(pipefd[0]);
             waitpid(pid, NULL, 0);
             return strdup("Memory allocation error");
         }
-        result[0] = '\0';
-        size_t total_bytes = 0;
 
-        while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[bytes_read] = '\0';
-            char *new_result = realloc(result, total_bytes + bytes_read + 1);
-            if (!new_result) {
-                free(result);
-                close(pipefd[0]);
-                waitpid(pid, NULL, 0);
-                return strdup("Memory allocation error");
-            }
-            result = new_result;
-            strcat(result, buffer);
-            total_bytes += bytes_read;
-        }
-        close(pipefd[0]);
-
-        int status;
-        waitpid(pid, &status, 0);
-
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            return result[0] ? result : strdup("");
-        } else {
-            if (result[0]) {
-                return result;
-            } else {
-                free(result);
-                return strdup("Command execution failed");
-            }
-        }
+        result = new_result;
+        memcpy(result + total_bytes, buffer, bytes_read + 1);
+        total_bytes += bytes_read;
     }
+
+    close(pipefd[0]);
+    int status;
+    waitpid(pid, &status, 0); // wait for finish child process
+
+    if (bytes_read < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        free(result);
+        return strdup("Command execution failed");
+    }
+
+    return result ? result : strdup("");
 }
 
 char *process_redirection_output(char *command, char *output_file) {
-    output_file = trim(output_file);
+    output_file = trim(output_file); // trim command
 
     int fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd == -1) {
-        perror("open");
-        return strdup("Failed to open output file");
-    }
+    if (fd == -1) { return strdup("Failed to open output file");}
 
-    pid_t pid;
-    pid = fork();
+    pid_t pid = fork(); // Fork a child process
     if (pid == 0) {
-        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDOUT_FILENO); // Redirect standard output to the file
         close(fd);
 
-        char **args = split_command(command);
+        char **args = split_command(command); // try to split command
         if (!args || !args[0]) {
             free_args(args);
-            exit(EXIT_FAILURE);
+            exit(1);
         }
-        execvp(args[0], args);
-        dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
-        exit(EXIT_FAILURE);
+        execvp(args[0], args);// Execute command
+        fprintf(stderr, "Command not found: %s\n", args[0]);
+        exit(1);
     } else if (pid < 0) {
-        perror("fork");
         close(fd);
         return strdup("Failed to fork process");
     } else {
         close(fd);
         int status;
-        waitpid(pid, &status, 0);
+        waitpid(pid, &status, 0); // wait for finish child process
 
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) { // check if command executed successfully
             return strdup("");
         } else {
             return strdup("Command execution failed");
@@ -417,178 +385,139 @@ char *process_redirection_output(char *command, char *output_file) {
     }
 }
 
-char *shell_process_input(char *command) {
-    if (!command || !*command) return strdup("");
+char *process_semicolon(char *command) {
+    char *command_copy = strdup(command);
+    if (!command_copy) return strdup("Memory allocation error");
+    
+    char *save_position = NULL;
+    char *current_command = strtok_r(command_copy, ";", &save_position);
 
-    char *comment_position = strchr(command, '#');
-    if (comment_position) *comment_position = '\0';
-
-    char *semicolon = strchr(command, ';');
-    if (semicolon) {
-        char *command_copy = strdup(command);
-        if (!command_copy) return strdup("Memory allocation error");
-        
-        char *saveptr = NULL;
-        char *current_command = strtok_r(command_copy, ";", &saveptr);
-        char *result = strdup("");
-        size_t result_len = 0;
-        
-        while (current_command) {
-            char *trimmed_command = trim(current_command);
-            if (*trimmed_command) {
-                char *cmd_output = shell_process_input(trimmed_command);
-                if (cmd_output) {
-                    size_t cmd_len = strlen(cmd_output);
-                    if (cmd_len > 0) {
-                        char *new_result = realloc(result, result_len + cmd_len + 2);
-                        if (!new_result) {
-                            free(cmd_output);
-                            free(result);
-                            free(command_copy);
-                            return strdup("Memory allocation error");
-                        }
-                        
-                        result = new_result;
-                        if (result_len > 0) {
-                            strcat(result, "\n");
-                            result_len++;
-                        }
-                        strcat(result, cmd_output);
-                        result_len += cmd_len;
+    char *result = NULL;
+    size_t result_len = 0;
+    while (current_command) {
+        if (*trim(current_command)) {
+            char *output = shell_process_input(trim(current_command));
+            
+            if (output && *output) {
+                if (!result) {
+                    result = strdup(output);
+                    result_len = strlen(output);
+                }
+                else {
+                    char *new_result = realloc(result, result_len + strlen(output) + 2);
+                    if (!new_result) {
+                        free(output);
+                        free(result);
+                        free(command_copy);
+                        return strdup("Memory allocation error");
                     }
-                    free(cmd_output);
+                    result = new_result;
+                    strcat(result, "\n");
+                    strcat(result, output);
+                    result_len = strlen(result);
                 }
             }
-            
-            current_command = strtok_r(NULL, ";", &saveptr);
+            free(output);
         }
+        current_command = strtok_r(NULL, ";", &save_position);
+    }
+    
+    free(command_copy);
+    return result ? result : strdup("");
+}
+
+char *process_pipe(char *command) {
+    char *pipe_position = strchr(command, '|'); // find pipe position
+    *pipe_position = '\0'; // split command
+
+    char *first_command = trim(command); 
+    char *second_command = trim(pipe_position + 1);
+    if (!*first_command || !*second_command) { return strdup("Invalid pipe command"); }// check if commands are valid
+    
+    int pipefd[2]; // Pipe file descriptors, 0 for read, 1 for write
+    if (pipe(pipefd) == -1) { return strdup("Failed to create pipe"); }
+    
+    pid_t pid = fork(); // fork a child process
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return strdup("Failed to fork process");
+    }
+    
+    if (pid == 0) {
+        // Child process do first command and write to pipe the second
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
         
-        free(command_copy);
-        return result;
+        char **args = split_command(first_command); // try to split command to args
+        if (!args || !args[0]) { // handle error
+            free_args(args);
+            exit(1);
+        }
+        execvp(args[0], args);
+        fprintf(stderr, "Command not found: %s\n", args[0]);
+        exit(1);
+    }
+    
+    close(pipefd[1]); // close write for pernt process
+    int stdin_backup = dup(STDIN_FILENO); // save stdin 
+
+    dup2(pipefd[0], STDIN_FILENO); // redirect stdin to read from pipe
+    close(pipefd[0]); // close read 
+    
+    char *result = launch_process(second_command); // execute second command
+    
+    dup2(stdin_backup, STDIN_FILENO); // restore stdin
+    close(stdin_backup); // close backup stdin
+    
+    int status;
+    waitpid(pid, &status, 0); // wait for finishing child process
+    
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) { // check result
+        free(result);
+        return strdup("Pipe execution failed");
+    }
+    return result;
+}
+
+char *shell_process_input(char *command) {
+    if (!command || !*command) return strdup("");
+    if (check_internal_command(trim(command))) { return strdup(shell_process_command(command));}
+
+    // check if command contains comment
+    char *comment_position = strchr(command, '#');
+    if (comment_position) *comment_position = '\0'; // remove comment part
+
+    // check if command contains ';'
+    char *semicolon = strchr(command, ';');
+    if (semicolon) {
+        return process_semicolon(command);
     }
 
     // Pipe handling
-    char *pipe_position = strchr(command, '|');
-    if (pipe_position) {
-        *pipe_position = '\0';
-        char *first_command = trim(command);
-        char *second_command = trim(pipe_position + 1);
-
-        if (!*first_command || !*second_command) {
-            return strdup("Invalid pipe command");
-        }
-
-        int pipefd[2];
-        if (pipe(pipefd) == -1) {
-            return strdup("Failed to create pipe");
-        }
-
-        pid_t pid1 = fork();
-        if (pid1 == 0) {
-            close(pipefd[0]);
-            dup2(pipefd[1], STDOUT_FILENO);
-            close(pipefd[1]);
-
-            char **args = split_command(first_command);
-            if (!args || !args[0]) {
-                free_args(args);
-                exit(EXIT_FAILURE);
-            }
-            execvp(args[0], args);
-            dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        pid_t pid2 = fork();
-        if (pid2 == 0) {
-            close(pipefd[1]);
-            dup2(pipefd[0], STDIN_FILENO);
-            close(pipefd[0]);
-
-            char **args = split_command(second_command);
-            if (!args || !args[0]) {
-                free_args(args);
-                exit(EXIT_FAILURE);
-            }
-            execvp(args[0], args);
-            dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        close(pipefd[0]);
-        close(pipefd[1]);
-
-        char *result = malloc(1);
-        if (!result) {
-            waitpid(pid1, NULL, 0);
-            waitpid(pid2, NULL, 0);
-            return strdup("Memory allocation error");
-        }
-        result[0] = '\0';
-        size_t total_bytes = 0;
-
-        int pipefd_out[2];
-        if (pipe(pipefd_out) == -1) {
-            free(result);
-            waitpid(pid1, NULL, 0);
-            waitpid(pid2, NULL, 0);
-            return strdup("Failed to create output pipe");
-        }
-
-        close(pipefd_out[1]);
-
-        char buffer[4096];
-        ssize_t bytes_read;
-        while ((bytes_read = read(pipefd_out[0], buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[bytes_read] = '\0';
-            char *new_result = realloc(result, total_bytes + bytes_read + 1);
-            if (!new_result) {
-                free(result);
-                close(pipefd_out[0]);
-                waitpid(pid1, NULL, 0);
-                waitpid(pid2, NULL, 0);
-                return strdup("Memory allocation error");
-            }
-            result = new_result;
-            strcat(result, buffer);
-            total_bytes += bytes_read;
-        }
-        close(pipefd_out[0]);
-
-        int status1, status2;
-        waitpid(pid1, &status1, 0);
-        waitpid(pid2, &status2, 0);
-
-        if (WIFEXITED(status1) && WEXITSTATUS(status1) == 0 &&
-            WIFEXITED(status2) && WEXITSTATUS(status2) == 0 &&
-            total_bytes > 0) {
-            if (total_bytes > 0 && result[total_bytes - 1] == '\n') {
-                result[total_bytes - 1] = '\0';
-            }
-            return result;
-        }
-
-        free(result);
-        return strdup(WIFEXITED(status2) && WEXITSTATUS(status2) == 0 ? "" : "Pipe execution failed");
+    char *pipe_position = strchr(command, '|'); // find pipe position
+    if (pipe_position) { // if pipe found
+        return process_pipe(command);
     }
 
     // Redirections
     char *redirection_pos = NULL;
     
     if ((redirection_pos = strchr(command, '>'))) {
-        *redirection_pos = '\0';
-        char *cmd_part = trim(command);
+        *redirection_pos = '\0'; // split command
+        char *command_part = trim(command); // trim command
         char *file_part = trim(redirection_pos + 1);
         
-        return process_redirection_output(cmd_part, file_part);
+        return process_redirection_output(command_part, file_part);
     }
     
     if ((redirection_pos = strchr(command, '<'))) {
-        *redirection_pos = '\0';
-        char *cmd_part = trim(command);
+        *redirection_pos = '\0'; // split command
+        char *command_part = trim(command); // trim command
         char *file_part = trim(redirection_pos + 1);
         
-        return process_redirection_input(cmd_part, file_part);
+        return process_redirection_input(command_part, file_part);
     }
     
     return shell_process_command(command);
