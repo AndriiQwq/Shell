@@ -28,8 +28,10 @@
 #define BUFFER_SIZE 1024
 
 void process_user_input(int sock, char *buffer) {
+    // Get uset input
     fgets(buffer, BUFFER_SIZE, stdin);
 
+    // comp input with '\n', return promt
     if (strlen(buffer) == 1 && buffer[0] == '\n') {
         write(sock, buffer, strlen(buffer));
         memset(buffer, 0, BUFFER_SIZE);
@@ -37,7 +39,7 @@ void process_user_input(int sock, char *buffer) {
     }
 
     buffer[strcspn(buffer, "\n")] = 0;
-    write_log("CLIENT", buffer); // Client can see only his log
+    write_log("CLIENT", buffer); // (NOTE: client can see only his log), log input
 
     if (strcmp(buffer, "quit") == 0) { // Stop the client
         write(sock, buffer, strlen(buffer));
@@ -51,9 +53,9 @@ void process_user_input(int sock, char *buffer) {
         exit(0);
     }
 
-    write(sock, buffer, strlen(buffer));
+    write(sock, buffer, strlen(buffer)); // Send command to proccessing 
     
-    memset(buffer, 0, BUFFER_SIZE);
+    memset(buffer, 0, BUFFER_SIZE); // Clear buffer
     // read(sock, buffer, BUFFER_SIZE);
     // printf("%s", buffer);
 }
@@ -61,19 +63,19 @@ void process_user_input(int sock, char *buffer) {
 void run_client(int port) {
     printf("Client is running on port %d\n", port);
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0); // create tcp socket  
+    if (sock < 0) { // check error(creation fail, ...)
         perror("socket");
         exit(1);
     }
 
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
+    struct sockaddr_in server_addr; // struct for server adres  
+    server_addr.sin_family = AF_INET; // ipv4
+    server_addr.sin_port = htons(port); // set port 
 
-    inet_pton(AF_INET, ip, &server_addr.sin_addr);
+    inet_pton(AF_INET, ip, &server_addr.sin_addr); // internet presentation to network, from string to binary and store result for    interface type AF in buffer starting at BUF.
 
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) { // Try to connect to serv4er
         perror("connect");
         close(sock);
         exit(1);
@@ -95,7 +97,7 @@ void run_client(int port) {
     read(sock, buffer, BUFFER_SIZE);
     printf("%s", buffer);
 
-
+    // time for keepalive 
     time_t last_activity_time = time(NULL);
 
     // Thread for keep-alive
@@ -121,7 +123,7 @@ void run_client(int port) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // Temporary error, continue
                 continue;
-            } else if (errno == ECONNRESET) { 
+            } else if (errno == ECONNRESET) {  //Connection reset by peer
                 printf("Connection closed due to Keep-Alive timeout\n");
                 // stop_keepalive = 1;
                 // pthread_join(keepalive_thread_id, NULL); // Wait for the end of the thread
@@ -132,7 +134,7 @@ void run_client(int port) {
                 exit(1);
             }
         } else if (bytes_read == 0) {
-            printf("Server disconnected\n"); // SErver close the connection
+            printf("Server disconnected\n"); // Server close the connection
             break;
         }
 
@@ -150,17 +152,19 @@ void run_client(int port) {
 void run_unix_client(const char *socket_path) {
     printf("Client is connecting to socket %s\n", socket_path);
 
-    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0); // Create a new socket
     if (sock == -1) {
         perror("Socket creation failed");
         exit(1);
     }
 
-    struct sockaddr_un server_addr;
-    server_addr.sun_family = AF_UNIX;
+    struct sockaddr_un server_addr; // Structure describing the address of an AF_LOCAL (aka AF_UNIX) socket.
+    server_addr.sun_family = AF_UNIX; // local
 
+    // copy path
     snprintf(server_addr.sun_path, sizeof(server_addr.sun_path), "%s", socket_path);
 
+    // try to open a connection on socket FD to peer at ADDR
     if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
         perror("Connect failed");
         close(sock);
@@ -174,7 +178,7 @@ void run_unix_client(const char *socket_path) {
     printf("%s", buffer);
 
 
-
+    // time for keepalive 
     time_t last_activity_time = time(NULL);
 
     // Thread for keep-alive
@@ -200,7 +204,7 @@ void run_unix_client(const char *socket_path) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // Temporary error, continue
                 continue;
-            } else if (errno == ECONNRESET) { 
+            } else if (errno == ECONNRESET) {  //Connection reset by peer
                 printf("Connection closed due to Keep-Alive timeout\n");
                 break;
             } else {
@@ -210,7 +214,7 @@ void run_unix_client(const char *socket_path) {
                 exit(1);
             }
         } else if (bytes_read == 0) {
-            printf("Server disconnected\n"); // SErver close the connection
+            printf("Server disconnected\n"); // Server close the connection
             break;
         }
 
@@ -218,7 +222,7 @@ void run_unix_client(const char *socket_path) {
     }
     
     close(sock);
-    unlink(socket_path);
+    unlink(socket_path); // unlink socket path 
     if (pthread_cancel(keepalive_thread_id) != 0) {
         perror("pthread_cancel");
     }

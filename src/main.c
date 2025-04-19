@@ -20,6 +20,7 @@
 // extern char *socketName;
 // extern char *ip;
 
+// Defoutlt settings
 char isServer = 0;
 char isClient = 0;
 int port = 0;
@@ -112,9 +113,9 @@ int main(int argc, char *argv[]) {
     if (config_path) load_env_file(config_path);
 
     // Get enveronment variables, if .env file exists
-    char *keepalive_interval_env = getenv("KEEPALIVE_INTERVAL");
+    char *keepalive_interval_env = getenv("KEEPALIVE_INTERVAL");// get .env keep_alive interval time
     if (keepalive_interval_env) {
-        keep_alive.interval = (unsigned int)atoi(keepalive_interval_env);
+        keep_alive.interval = (unsigned int)atoi(keepalive_interval_env); //convert to int 
     }    
 
     // keep_alive.probes = getenv("KEEPALIVE_PROBES") ? (unsigned int) atoi(getenv("KEEPALIVE_PROBES")) : keep_alive.probes;
@@ -126,7 +127,8 @@ int main(int argc, char *argv[]) {
         log_file_path = log_file_path_env;
         printf("Log file path set to %s from evirement file.\n", log_file_path);
     }
-
+    
+    // Log 
     if(log_file_path != NULL && log_file_exists(log_file_path) == 0) {
         create_log_file(log_file_path);
         if (isClient) {
@@ -143,11 +145,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (isServer) {
-        // pthread_t server_thread_id;
-        // if (pthread_create(&server_thread_id, NULL, server_thread, NULL) != 0) {
-        //     perror("Failed to create server thread");
-        //     return 1;
-        // }
         pid_t pid = fork(); // Create a child process
         if (pid < 0) {
             perror("Failed to fork server process");
@@ -163,6 +160,9 @@ int main(int argc, char *argv[]) {
             // Parent process, continue to run shell
             printf("Server started in process %d\n", pid);
         }
+
+        sleep(1);
+        printf("%s", get_prompt());
 
         char buffer[1024];
         while (1) { // Internal server shell loop
@@ -191,23 +191,13 @@ int main(int argc, char *argv[]) {
                 waitpid(pid, NULL, 0); // Wait for finish child process
                 exit(0);
             }
-        
-            // if (strcmp(buffer, "quit") == 0) { // Stop all conection
-            //     // TODO
-            //     exit(0);
-            // }
-        
-            // if (strcmp(buffer, "halt") == 0) { // Stop all conection and exit program
-            //     if (pthread_cancel(server_thread_id) != 0) {
-            //         perror("pthread_cancel");
-            //     }
-            //     pthread_join(server_thread_id, NULL);
-            //     exit(0);
-            // }
 
+            // whell in server 
             char *result = shell_process_input(buffer);
             if(result) {
                 printf("%s\n", result);
+                printf("%s", get_prompt());
+                
                 free(result);
             } else {
                 printf("%s", get_prompt());
@@ -226,15 +216,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
-// void *server_thread(void *arg) {
-//     (void)arg; // Don't use arg
-
-//     if (socketName) {
-//         run_unix_server(socketName);
-//     } else {
-//         run_server(port);
-//     }
-
-//     return NULL;
-// }

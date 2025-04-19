@@ -11,7 +11,6 @@
 
 #define check(expr) if (!(expr)) { perror(#expr); kill(0, SIGTERM); }
 
-// global instance
 // KeepAlive keep_alive = {5, 3, 30}; // 5 seconds interval, 3 probes, 30 seconds timeout
 KeepAlive keep_alive = {5, 1, 10};
 
@@ -40,17 +39,17 @@ void enable_keepalive(int sock) {
     check(setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != -1);
 }
 
-
+// keep alive thread 
 void *keepalive_thread(void *arg) {
     KeepAliveArgs *args = (KeepAliveArgs *)arg;
 
     while (1) { // Check every second
-        sleep(1);
+        sleep(1); // sleep 1s before checking keeplive time
 
         time_t current_time = time(NULL);
-        if (difftime(current_time, *(args->last_activity_time)) > args->timeout) {
-            printf("Connection closed due to inactivity (Keep-Alive timeout)\n");
-            close(args->sock);
+        if (difftime(current_time, *(args->last_activity_time)) > args->timeout) { // difference ov current tiem and last activity time comp with timeout
+            printf("Connection closed due to inactivity (Keep-Alive timeout)\n"); // print close connection mesg
+            close(args->sock); // Close socket
             pthread_exit(NULL); // Exit the thread
         }
     }

@@ -15,24 +15,164 @@
 #include "shell.h"
 #include "utils.h"
 
+#define TOK_BUFSIZE 64 // define tok buffer size 
+#define TOK_DELIM " \t\r\n\a" // def telime
+
 char *get_prompt() {
     static char prompt[256];
 
     // https://stackoverflow.com/questions/5141960/get-the-current-time-in-c
     char *current_time = get_current_time();
 
-    uid_t uid = getuid();
-    struct passwd *pw = getpwuid(uid);
+    uid_t uid = getuid(); // Get the real user ID of the calling process.
+    struct passwd *pw = getpwuid(uid); // Retrieve the user database entry for the given user ID.
     if (!pw) perror("getpwuid");
 
     char hostname[32];
-    if (gethostname(hostname, sizeof(hostname)) != 0)  perror("gethostname");
+    if (gethostname(hostname, sizeof(hostname)) != 0)  perror("gethostname"); //Put the name of the current host
 
+    // copy to prompt 
     snprintf(prompt, sizeof(prompt), "%s %s@%s$", current_time, pw->pw_name, hostname);
 
     free(current_time);
     return prompt;
 }
+
+
+char **split_command(const char *command) {
+    char *command_copy = strdup(command);
+    if (!command_copy) {
+        perror("strdup");
+        return NULL;
+    }
+    int bufsize = TOK_BUFSIZE, position = 0;
+    char **tokens = malloc(bufsize * sizeof(char*));
+    char *token;
+    if (!tokens) {
+        free(command_copy);
+        return NULL;
+    }
+    token = strtok(command_copy, TOK_DELIM);
+    while (token != NULL) {
+        tokens[position] = strdup(token);
+        position++;
+        if (position >= bufsize) {
+            bufsize += TOK_BUFSIZE;
+            tokens = realloc(tokens, bufsize * sizeof(char*));
+            if (!tokens) {
+                free(command_copy);
+                return NULL;
+            }
+        }
+        token = strtok(NULL, TOK_DELIM);
+    }
+    tokens[position] = NULL;
+    
+    free(command_copy);
+    return tokens;
+}
+
+void free_args(char **args) {
+    if (!args) return;
+    
+    for (int i = 0; args[i] != NULL; i++) {
+        free(args[i]);
+    }
+    free(args);
+}
+
+// Launching external commands
+char *launch_process(const char *command) {
+    char **args = split_command(command);
+    if (!args || !args[0]) {
+        if (args) free_args(args);
+        return strdup("Invalid command");
+    }
+    pid_t pid;
+    int pipefd[2];
+    
+    // Create a pipe 
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        free_args(args);
+        return strdup("Failed to create pipe");
+    }
+    pid = fork();
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]); // close pipe read 
+        
+        // Stdout -> pipe
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        
+        // Execute command
+        if (execvp(args[0], args) == -1) {
+            char error_msg[100];
+            snprintf(error_msg, sizeof(error_msg), "Command not found: %s", args[0]);
+            write(STDERR_FILENO, error_msg, strlen(error_msg));
+            exit(EXIT_FAILURE);
+        }
+        
+        exit(EXIT_SUCCESS);
+    } else if (pid < 0) {
+        // Fork error
+        perror("fork");
+        free_args(args);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return strdup("Failed to fork process");
+    } else {
+        // Parent process
+        close(pipefd[1]);
+        
+        // Read pipe output
+        char buffer[4096];
+        ssize_t bytes_read;
+        char *result = malloc(1);
+        if (!result) {
+            free_args(args);
+            close(pipefd[0]);
+            return strdup("Memory allocation error");
+        }
+        result[0] = '\0';
+        size_t total_bytes = 0;
+        
+        while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytes_read] = '\0';
+            char *new_result = realloc(result, total_bytes + bytes_read + 1);
+            if (!new_result) {
+                free(result);
+                free_args(args);
+                close(pipefd[0]);
+                return strdup("Memory allocation error");
+            }
+            result = new_result;
+            strcat(result, buffer);
+            total_bytes += bytes_read;
+        }
+        
+        close(pipefd[0]);
+        
+        // Waiting for finish child process
+        int status;
+        waitpid(pid, &status, 0);
+        
+        free_args(args);
+        
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            return result[0] ? result : strdup("");
+        } else {
+            if (result[0]) {
+                return result;
+            } else {
+                free(result);
+                return strdup("Command execution failed");
+            }
+        }
+    }
+}
+
 
 
 char *shell_process_command(const char *command) {
@@ -42,35 +182,21 @@ char *shell_process_command(const char *command) {
         return command_quit();
     } else if (strcmp(command, "halt") == 0) {
         return command_halt();
-    } else if (strcmp(command, "whoami") == 0) {
-        return command_whoami();
-    } else if (strcmp(command, "hostname") == 0) {
-        return command_hostname();
-    } else if (strcmp(command, "pwd") == 0) {
-        return command_pwd();
-    } else if (strncmp(command, "cd ", 3) == 0) {
-        const char *path = command + 3;
-        return command_cd(path);
-    } else if (strcmp(command, "ls") == 0) {
-        return command_ls();
-    } else if (strncmp(command, "cat ", 4) == 0) {
-        const char *file_path = command + 4;
-        return strdup(command_cat(file_path));
-    } else if (strncmp(command, "echo ", 5) == 0) {
-        const char *message = command + 5;
-        return strdup(message); // Duplicate and return string.
-    } else if (strncmp(command, "run ", 4) == 0) {
+    } else if (strncmp(command, "run ", 4) == 0) {  // Run script file
         const char *script_path = command + 4;
         char *script_output = process_script(script_path);
         return script_output;
-    } else if (strncmp(command, "wc -l", 6) == 0) {
-        const char *input = command + 6;
-        return command_wc(input);
+    } else if (strncmp(command, "cd ", 3) == 0) { // Change directory
+        const char *dir = command + 3;
+        if (chdir(dir) != 0) {
+            perror("chdir");
+            return strdup("Failed to change directory");
+        }
+        return strdup("");
     } else {
-        return "";
+        return launch_process(command);
     }
 }
-
 
 
 char *command_help() {
@@ -81,39 +207,36 @@ char *command_help() {
         "   ./shell ...\n"
         "   make run ARGS=\"-s -p 8071 -C .env\"\n"
         "Options:\n"
-        "  -s          Run as server\n"
-        "  -c          Run as client\n"
-        "  -p port     Specify port number\n"
-        "  -u socket   Specify socket name\n"
-        "  -i ip       Specify IP address\n"
-        "  -h          Show help message\n"
-        "  -t timeout  Set inactivity timeout\n"
+        "  -s -  Run as server\n"
+        "  -c -  Run as client\n"
+        "  -p port - Specify port number\n"
+        "  -u socket - Specify socket name\n"
+        "  -i ip - Specify IP address\n"
+        "  -h - Show help message\n"
+        "  -t timeout - Set inactivity timeout\n"
+        "  -C \n"
+        "  -l path - Set output for log file\n"
         "\n"
         "Available commands:\n"
-           "help - display the help message\n"
-           "quit - close the connection\n"
-           "halt - stop the server\n"
-           "whoami - display the current username\n"
-           "hostname - display the hostname\n"
-           "pwd - display the current directory\n"
-           "cd <path> - change the current directory\n"
-           "ls - list files in the current directory\n"
-           "cat <file_path> - display the contents of a file\n"
-           "echo <message> - display a message\n"
-           "run <script_path> - run a script on the server\n"
-           "ls > file.txt - save the output of ls to a file\n"
-           "wc -l - count the number of lines\n"
-           "Special symbols:\n"
-           "  ; - separate multiple commands\n"
-           "  < - redirect input from a file\n"
-           "  > - redirect output to a file\n"
-           "  # - comment\n"
-           "  | - pipe\n"
-           "Example:\n"
-           "  ls | wc -l\n"
-           "  cat script.txt | wc -l"
-           "Bonus tasks:\n"
-           "  1, 7, 11, 12, 13, 15, 16, 18, 20, 21"
+        "    help - display the help message\n"
+        "    quit - close the connection\n"
+        "    halt - stop the server\n"
+        "    cd <directory> - change the directory\n"
+        "    run <script_path> - run a script on the server\n"
+        "    And other commands which are available in the shell\n"
+        "Special symbols:\n"
+        "  ; - separate multiple commands\n"
+        "  < - redirect input from a file\n"
+        "  > - redirect output to a file\n"
+        "  # - comment\n"
+        "  | - pipe\n"
+        "Bonus tasks:\n"
+        "    1, 7, 11, 12, 13, 15, 16, 18, 20, 21, 23"
+        "Input example:\n"
+        "    wc -l < output.txt\n"
+        "    ls > output.txt\n"
+        "    pwd; ls; hostname;;;;\n"
+        "    cat output.txt | wc -l\n"
     );
 }
 
@@ -123,109 +246,7 @@ char *command_quit() {
 
 char *command_halt() {
     return "Server stopped";
-}
-
-char *command_whoami() {
-    uid_t uid = getuid();
-    struct passwd *pw = getpwuid(uid);
-    if (pw) return pw->pw_name;
-    else return "Error to get username";
-}
-
-char *command_hostname() {
-    static char hostname[256];
-    if (gethostname(hostname, sizeof(hostname)) == 0)  return hostname;
-    else return "Error to get hostname";
-}
-
-char *command_pwd() {
-    static char cwd[256];
-    if (getcwd(cwd, sizeof(cwd)) != NULL) return cwd;
-    else return "Error to get current directory";
-}
-
-char *command_cd(const char *path) {
-    if (chdir(path) == 0) return command_pwd();
-    else return "Failed to change directory";
-}
-
-char *command_wc(const char *input) {
-    if (!input || input[0] == '\0') {
-        char *result = malloc(2);
-        if (!result) return strdup("Memory allocation error");
-        strcpy(result, "0");
-        return result;
-    }
-
-    char *input_copy = strdup(input);
-    if (!input_copy) {
-        return strdup("Memory allocation error");
-    }
-
-    int count = 0;
-    char *saveptr = NULL;
-    char *line = strtok_r(input_copy, "\n", &saveptr);
-    
-    while (line != NULL) {
-        count++;
-        line = strtok_r(NULL, "\n", &saveptr);
-    }
-    
-    free(input_copy);
-    
-    char *result = malloc(20);
-    if (!result) {
-        return strdup("Memory allocation error");
-    }
-    
-    snprintf(result, 20, "%d", count);
-    return result;
-}
-
-char *command_ls() {
-    static char ls[1024];
-    memset(ls, 0, sizeof(ls));
-
-    DIR *dir = opendir(".");
-    if (dir == NULL) {
-        return "Failed to open directory";
-    }
-
-    struct dirent *node;
-    while ((node = readdir(dir)) != NULL) {
-        strncat(ls, node->d_name, sizeof(ls) - strlen(ls) - 1);
-        strncat(ls, "\n", sizeof(ls) - strlen(ls) - 1);
-    }
-
-    closedir(dir);
-    return ls;
-}
-
-// //https://github.com/bddicken/languages/blob/eaf4b48be17827f254f8ff08aca217a9605bbcc3/levenshtein/c/run.c
-char *command_cat(const char *file_path) {
-    // First read entire file content
-    FILE* file = fopen(file_path, "r");
-    if (!file) {
-        fprintf(stderr, "Could not open file: %s\n", file_path);
-        return ("Failed to open file");
-    }
-
-    // Get file size
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    char *content = malloc(file_size + 1);
-    if (!content) {
-        fclose(file);
-        return ("Failed to allocate memory");
-    }
-
-    fread(content, 1, file_size, file);
-    content[file_size] = '\0';
-
-    fclose(file);
-    return (content);
+    exit(0);
 }
 
 
@@ -271,144 +292,304 @@ void  write_file(const char* filename, const char* content) {
 }
 
 
+char *process_redirection_input(char *command, char *input_file) {
+    input_file = trim(input_file);
+
+    int fd = open(input_file, O_RDONLY);
+    if (fd == -1) {
+        perror("open");
+        return strdup("Failed to open input file");
+    }
+
+    pid_t pid;
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        close(fd);
+        return strdup("Failed to create pipe");
+    }
+
+    pid = fork();
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(fd, STDIN_FILENO);
+        close(fd);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        char **args = split_command(command);
+        if (!args || !args[0]) {
+            free_args(args);
+            exit(EXIT_FAILURE);
+        }
+        execvp(args[0], args);
+        dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        perror("fork");
+        close(fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return strdup("Failed to fork process");
+    } else {
+        close(fd);
+        close(pipefd[1]);
+
+        char buffer[4096];
+        ssize_t bytes_read;
+        char *result = malloc(1);
+        if (!result) {
+            close(pipefd[0]);
+            waitpid(pid, NULL, 0);
+            return strdup("Memory allocation error");
+        }
+        result[0] = '\0';
+        size_t total_bytes = 0;
+
+        while ((bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytes_read] = '\0';
+            char *new_result = realloc(result, total_bytes + bytes_read + 1);
+            if (!new_result) {
+                free(result);
+                close(pipefd[0]);
+                waitpid(pid, NULL, 0);
+                return strdup("Memory allocation error");
+            }
+            result = new_result;
+            strcat(result, buffer);
+            total_bytes += bytes_read;
+        }
+        close(pipefd[0]);
+
+        int status;
+        waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            return result[0] ? result : strdup("");
+        } else {
+            if (result[0]) {
+                return result;
+            } else {
+                free(result);
+                return strdup("Command execution failed");
+            }
+        }
+    }
+}
+
+char *process_redirection_output(char *command, char *output_file) {
+    output_file = trim(output_file);
+
+    int fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        perror("open");
+        return strdup("Failed to open output file");
+    }
+
+    pid_t pid;
+    pid = fork();
+    if (pid == 0) {
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+
+        char **args = split_command(command);
+        if (!args || !args[0]) {
+            free_args(args);
+            exit(EXIT_FAILURE);
+        }
+        execvp(args[0], args);
+        dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        perror("fork");
+        close(fd);
+        return strdup("Failed to fork process");
+    } else {
+        close(fd);
+        int status;
+        waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            return strdup("");
+        } else {
+            return strdup("Command execution failed");
+        }
+    }
+}
 
 char *shell_process_input(char *command) {
-    char *output = NULL;
+    if (!command || !*command) return strdup("");
 
     char *comment_position = strchr(command, '#');
     if (comment_position) *comment_position = '\0';
 
+    char *semicolon = strchr(command, ';');
+    if (semicolon) {
+        char *command_copy = strdup(command);
+        if (!command_copy) return strdup("Memory allocation error");
+        
+        char *saveptr = NULL;
+        char *current_command = strtok_r(command_copy, ";", &saveptr);
+        char *result = strdup("");
+        size_t result_len = 0;
+        
+        while (current_command) {
+            char *trimmed_command = trim(current_command);
+            if (*trimmed_command) {
+                char *cmd_output = shell_process_input(trimmed_command);
+                if (cmd_output) {
+                    size_t cmd_len = strlen(cmd_output);
+                    if (cmd_len > 0) {
+                        char *new_result = realloc(result, result_len + cmd_len + 2);
+                        if (!new_result) {
+                            free(cmd_output);
+                            free(result);
+                            free(command_copy);
+                            return strdup("Memory allocation error");
+                        }
+                        
+                        result = new_result;
+                        if (result_len > 0) {
+                            strcat(result, "\n");
+                            result_len++;
+                        }
+                        strcat(result, cmd_output);
+                        result_len += cmd_len;
+                    }
+                    free(cmd_output);
+                }
+            }
+            
+            current_command = strtok_r(NULL, ";", &saveptr);
+        }
+        
+        free(command_copy);
+        return result;
+    }
+
+    // Pipe handling
     char *pipe_position = strchr(command, '|');
     if (pipe_position) {
         *pipe_position = '\0';
         char *first_command = trim(command);
         char *second_command = trim(pipe_position + 1);
 
-        char *first_output = shell_process_command(first_command);
-        
-        if (first_output && *first_output) {
-            if (strncmp(second_command, "wc -l", 5) == 0) {
-                output = command_wc(first_output);
-            } else {
-                char *second_output = shell_process_command(second_command);
-                if (second_output) {
-                    output = strdup(second_output);
-                    if (strcmp(second_command, "ls") != 0 && 
-                        strcmp(second_command, "pwd") != 0 &&
-                        strcmp(second_command, "whoami") != 0 &&
-                        strcmp(second_command, "hostname") != 0 &&
-                        strcmp(second_command, "help") != 0 &&
-                        strcmp(second_command, "quit") != 0 &&
-                        strcmp(second_command, "halt") != 0) 
-                        {
-                            free(second_output);
-                    } 
-                }
-            }
-
-            if (strcmp(first_command, "ls") != 0 && 
-                strcmp(first_command, "pwd") != 0 &&
-                strcmp(first_command, "whoami") != 0 &&
-                strcmp(first_command, "hostname") != 0 &&
-                strcmp(first_command, "help") != 0 &&
-                strcmp(first_command, "quit") != 0 &&
-                strcmp(first_command, "halt") != 0) {
-                free(first_output);
-            }
+        if (!*first_command || !*second_command) {
+            return strdup("Invalid pipe command");
         }
 
-        return output ? output : strdup("");
+        int pipefd[2];
+        if (pipe(pipefd) == -1) {
+            return strdup("Failed to create pipe");
+        }
+
+        pid_t pid1 = fork();
+        if (pid1 == 0) {
+            close(pipefd[0]);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+
+            char **args = split_command(first_command);
+            if (!args || !args[0]) {
+                free_args(args);
+                exit(EXIT_FAILURE);
+            }
+            execvp(args[0], args);
+            dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
+            exit(EXIT_FAILURE);
+        }
+
+        pid_t pid2 = fork();
+        if (pid2 == 0) {
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+
+            char **args = split_command(second_command);
+            if (!args || !args[0]) {
+                free_args(args);
+                exit(EXIT_FAILURE);
+            }
+            execvp(args[0], args);
+            dprintf(STDERR_FILENO, "Command not found: %s\n", args[0]);
+            exit(EXIT_FAILURE);
+        }
+
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        char *result = malloc(1);
+        if (!result) {
+            waitpid(pid1, NULL, 0);
+            waitpid(pid2, NULL, 0);
+            return strdup("Memory allocation error");
+        }
+        result[0] = '\0';
+        size_t total_bytes = 0;
+
+        int pipefd_out[2];
+        if (pipe(pipefd_out) == -1) {
+            free(result);
+            waitpid(pid1, NULL, 0);
+            waitpid(pid2, NULL, 0);
+            return strdup("Failed to create output pipe");
+        }
+
+        close(pipefd_out[1]);
+
+        char buffer[4096];
+        ssize_t bytes_read;
+        while ((bytes_read = read(pipefd_out[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytes_read] = '\0';
+            char *new_result = realloc(result, total_bytes + bytes_read + 1);
+            if (!new_result) {
+                free(result);
+                close(pipefd_out[0]);
+                waitpid(pid1, NULL, 0);
+                waitpid(pid2, NULL, 0);
+                return strdup("Memory allocation error");
+            }
+            result = new_result;
+            strcat(result, buffer);
+            total_bytes += bytes_read;
+        }
+        close(pipefd_out[0]);
+
+        int status1, status2;
+        waitpid(pid1, &status1, 0);
+        waitpid(pid2, &status2, 0);
+
+        if (WIFEXITED(status1) && WEXITSTATUS(status1) == 0 &&
+            WIFEXITED(status2) && WEXITSTATUS(status2) == 0 &&
+            total_bytes > 0) {
+            if (total_bytes > 0 && result[total_bytes - 1] == '\n') {
+                result[total_bytes - 1] = '\0';
+            }
+            return result;
+        }
+
+        free(result);
+        return strdup(WIFEXITED(status2) && WEXITSTATUS(status2) == 0 ? "" : "Pipe execution failed");
     }
 
-
-    if (strchr(command, ';') == NULL) { // Only one command
-        char *trimmed_command = trim(command);
-        char *input_file = NULL;
-        char *output_file = NULL;
-        char *redirection = NULL;
-
-        int redirection_flag = 0;
-        if ((redirection = strchr(command, '<')) != NULL) {
-            redirection_flag = 1;
-
-            *redirection = '\0';
-            input_file = strtok(redirection + 1, " "); // extract filename, string after '<'
-            input_file = trim(input_file); //trim name of the file 
-
-            trimmed_command = trim(command);
-        }
+    // Redirections
+    char *redirection_pos = NULL;
     
-        if ((redirection = strchr(command, '>')) != NULL) {
-            redirection_flag = 2;
-
-            *redirection = '\0';
-            output_file = strtok(redirection + 1, " "); // extract filename, string after '>'
-            output_file = trim(output_file); // trim name of the file
-
-            trimmed_command = trim(command);
-        }
-
-        if (redirection_flag == 1) {
-            if(strcmp(trimmed_command, "cat" ) == 0) {
-                char modified_command[512];
-                snprintf(modified_command, sizeof(modified_command), "cat %s", input_file);
-
-                output = shell_process_command(modified_command);
-            } else {
-
-                char *file_content = read_file(input_file);
-                if (file_content) {
-                    output = shell_process_command(file_content);
-                    free(file_content);
-                }
-            }
-        } else if (redirection_flag == 2) {
-            char *command_output = shell_process_command(trimmed_command);
-            if (command_output) {
-                write_file(output_file, command_output);
-                free(command_output);
-            }
-        } else {
-            output = shell_process_command(trimmed_command);
-        }
-    } else {
-        char *current_command = strtok(command, ";");
-        size_t result_size = 0;
-
-        while (current_command != NULL) {
-            char *trimmed_command = trim(current_command);
-
-            char *command_output = shell_process_input(trimmed_command);
-            if (command_output) {
-                size_t command_output_len = strlen(command_output);
-
-                output = realloc(output, result_size + command_output_len + 2);
-                if (!output) {
-                    free(command_output);
-                    free(command);
-                    return strdup("Error: Memory allocation failed");
-                }
-
-                strcpy(output + result_size, command_output);
-                result_size += command_output_len;
-
-                if(output && (output[0] != '\n' || output[0] != '\0') ) {
-                    output[result_size] = '\n';
-                    result_size++;
-                }
-
-                free(command_output);
-            }
-
-            current_command = strtok(NULL, ";");
-        }
-
-        if (output) {
-            output[result_size - 1] = '\0';
-        }
-
+    if ((redirection_pos = strchr(command, '>'))) {
+        *redirection_pos = '\0';
+        char *cmd_part = trim(command);
+        char *file_part = trim(redirection_pos + 1);
+        
+        return process_redirection_output(cmd_part, file_part);
     }
-
-    // return output ? output : strdup("");
-    return output ? strdup(output) : strdup("");
+    
+    if ((redirection_pos = strchr(command, '<'))) {
+        *redirection_pos = '\0';
+        char *cmd_part = trim(command);
+        char *file_part = trim(redirection_pos + 1);
+        
+        return process_redirection_input(cmd_part, file_part);
+    }
+    
+    return shell_process_command(command);
 }

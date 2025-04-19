@@ -20,16 +20,13 @@ void run_unix_server(const char *socket_path);
 void run_client(int port);
 void run_unix_client(const char *socket_path);
 
+void free_args(char **args);
+
+char *launch_process(const char *command);
 char *command_help();
 char *command_quit();
 char *command_halt();
-char *command_whoami();
-char *command_hostname();
-char *command_pwd();
-char *command_cd(const char *path);
-char *command_ls();
-char *command_cat(const char *file_path);
-char *command_wc(const char *input);
+
 char *process_script(const char *script_path);
 // char *command_send(int client_sock, const char *file_path);
 
