@@ -16,7 +16,11 @@ OBJS = $(patsubst $(SRCDIR)/%.c, $(BUILDDIR)/%.o, $(SRCS))  # Convert .c files t
 # Default target, set dependencies with all, clean, run
 # If file does not exist or we need update him
 # make will run the $(TARGET) rule for creation the target file
-all: $(TARGET)
+all: $(BUILDDIR) $(TARGET)
+
+# Create build directory if it doesn't exist
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
 
 # make, compile the target file
 
@@ -26,7 +30,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
 
 # Compile the .c files to .o files
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Exmple
@@ -35,7 +39,7 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 
 # Clean up builded .o files
 clean:
-	rm -f $(BUILDDIR)/*.o $(TARGET)
+	rm -rf $(BUILDDIR) $(TARGET)
 
 # make clean, remove all .o files and the target file
 
@@ -46,4 +50,4 @@ run: $(TARGET)
 # make run ARGS="-c -p 8071"
 
 # all, clean, run are not files. Prevent coflict if there are files with the same name
-.PHONY: all clean run
+.PHONY: all clean run $(BUILDDIR)

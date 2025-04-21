@@ -146,9 +146,7 @@ void run_client(int port) {
     
     
     close(sock);
-    if (pthread_cancel(keepalive_thread_id) != 0) {
-        perror("pthread_cancel");
-    }
+    if (pthread_cancel(keepalive_thread_id) != 0) { perror("pthread_cancel");}
     exit(0); // Exit the client program and stop all sub-threads
 }
 
@@ -226,8 +224,6 @@ void run_unix_client(const char *socket_path) {
     
     close(sock);
     unlink(socket_path); // unlink socket path 
-    if (pthread_cancel(keepalive_thread_id) != 0) {
-        perror("pthread_cancel");
-    }
+    if (pthread_cancel(keepalive_thread_id) != 0) { perror("pthread_cancel"); }
     exit(0); // Exit the client program and stop all sub-threads
 }

@@ -121,7 +121,7 @@ char *launch_process(const char *command) {
         close(pipefd[1]);
 
         execvp(args[0], args);
-        fprintf(stderr, "Command not found: %s\n", args[0]);
+        // fprintf(stderr, "Command not found: %s\n", args[0]);
         exit(1);
     }
 
@@ -310,7 +310,7 @@ char *process_redirection_input(char *command, char *input_file) {
 
         execvp(args[0], args); // execute command
         // writes formatted output
-        fprintf(stderr, "Command not found: %s\n", args[0]);
+        // fprintf(stderr, "Command not found: %s\n", args[0]);
         exit(1);
     }
 
@@ -367,7 +367,7 @@ char *process_redirection_output(char *command, char *output_file) {
             exit(1);
         }
         execvp(args[0], args);// Execute command
-        fprintf(stderr, "Command not found: %s\n", args[0]);
+        // fprintf(stderr, "Command not found: %s\n", args[0]);
         exit(1);
     } else if (pid < 0) {
         close(fd);
@@ -456,7 +456,7 @@ char *process_pipe(char *command) {
             exit(1);
         }
         execvp(args[0], args);
-        fprintf(stderr, "Command not found: %s\n", args[0]);
+        // fprintf(stderr, "Command not found: %s\n", args[0]);
         exit(1);
     }
     
